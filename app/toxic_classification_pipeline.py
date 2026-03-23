@@ -48,20 +48,50 @@ def get_text_classification_pipeline() -> Any:
     return _text_classification_pipe
 
 
-# Chunks that are only punctuation / spaces (no letters, digits, or CJK) attach to a neighbor
-# so ``。`` or ``！！`` do not become their own "sentence" after regex split.
-_PUNCT_OR_SPACE_ONLY = re.compile(
-    r"^[\s。！？.!?,，、；;:：\"\"''（）()【】\[\]—…·]+$"
+# If a split fragment has no CJK, no Latin letters, and no digits, treat it as
+# "punctuation / quotes / symbols only" and merge with neighbors. This covers
+# ASCII ``"`` and curly quotes ``"\u201c\u201d"`` without maintaining a huge list.
+_HAS_LETTER_OR_DIGIT_OR_CJK = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
+
+# Line that is only ASCII/Unicode hyphens and dashes (dialogue bullets, separators).
+_DASH_ONLY_LINE = re.compile(
+    r"^[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D\s]+$"
 )
 
 
+def _merge_dash_only_segments(sentences: list[str]) -> list[str]:
+    """Merge segments that are only hyphens/dashes/spaces into neighbors.
+
+    Catches lone ``-`` lines that should not be a separate detection unit.
+    """
+    if not sentences:
+        return sentences
+    out: list[str] = []
+    pending = ""
+    for s in sentences:
+        t = s.strip()
+        if not t:
+            continue
+        if _DASH_ONLY_LINE.fullmatch(t):
+            pending += s
+            continue
+        if pending:
+            s = pending + s
+            pending = ""
+        out.append(s)
+    if pending:
+        if out:
+            out[-1] = out[-1] + pending
+        else:
+            out.append(pending.strip())
+    return out
+
+
 def _is_punctuation_only_chunk(s: str) -> bool:
-    """True if s has no real words (only punctuation and whitespace)."""
+    """True if s has no real words (only punctuation, quotes, spaces, symbols)."""
     if not s or not s.strip():
         return True
-    if _PUNCT_OR_SPACE_ONLY.fullmatch(s):
-        return True
-    return False
+    return _HAS_LETTER_OR_DIGIT_OR_CJK.search(s) is None
 
 
 def split_into_sentences(text: str) -> list[str]:
@@ -113,6 +143,13 @@ def split_into_sentences(text: str) -> list[str]:
         else:
             merged.append(pending_leading_punct.strip())
 
+    merged = _merge_dash_only_segments(merged)
+    if (
+        len(merged) == 1
+        and merged[0].strip()
+        and _DASH_ONLY_LINE.fullmatch(merged[0].strip())
+    ):
+        return []
     return merged if merged else [text]
 
 

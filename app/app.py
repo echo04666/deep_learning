@@ -10,6 +10,7 @@ Layout follows 执行指南_代码生成规范.md: constants, loaders, helpers, 
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,14 +54,14 @@ HISTORY_JSON_PATH = APP_DIR / "data" / "publish_history.json"
 
 
 def _load_publish_history() -> list[dict]:
-    """Load past publications from disk (best effort)."""
+    """Load past publications from disk (best effort) and normalize schema."""
     if not HISTORY_JSON_PATH.exists():
         return []
     try:
         with open(HISTORY_JSON_PATH, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return data
+            return _normalize_history_list(data)
         return []
     except (json.JSONDecodeError, OSError):
         return []
@@ -71,6 +72,82 @@ def _save_publish_history(entries: list[dict]) -> None:
     HISTORY_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(HISTORY_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+def build_compliance_payload(
+    *,
+    full_text: str,
+    lines: list[str],
+    published_at: str,
+    entry_id: str,
+) -> dict:
+    """Compliance-only export: no scores or raw classifier outputs."""
+    return {
+        "schema_version": "1.0",
+        "status": "all_sentences_cleared",
+        "entry_id": entry_id,
+        "published_at": published_at,
+        "classifier_model_id": TOXIC_CLF_MODEL_ID,
+        "full_text": full_text,
+        "sentences": [{"index": i + 1, "text": t} for i, t in enumerate(lines)],
+    }
+
+
+def _coerce_history_entry(raw: dict) -> dict:
+    """Normalize disk/session entries to include a ``compliance`` block (legacy migrate)."""
+    if raw.get("compliance") and isinstance(raw["compliance"], dict):
+        out = dict(raw)
+        if not out.get("id"):
+            out["id"] = str(uuid.uuid4())
+        return out
+    ft = raw.get("full_text", "") or ""
+    lines = list(raw.get("sentences") or [])
+    if not lines and ft.strip():
+        lines = [ln for ln in ft.split("\n") if ln.strip()]
+    pid = raw.get("id") or str(uuid.uuid4())
+    at = raw.get("published_at") or ""
+    comp = build_compliance_payload(
+        full_text=ft,
+        lines=lines,
+        published_at=at,
+        entry_id=pid,
+    )
+    return {"id": pid, "published_at": at, "compliance": comp}
+
+
+def _normalize_history_list(entries: list[dict]) -> list[dict]:
+    return [_coerce_history_entry(e) for e in entries if isinstance(e, dict)]
+
+
+def _render_readonly_history_entry(
+    entry: dict,
+    *,
+    idx_label: str,
+    widget_key_prefix: str = "",
+) -> None:
+    """Show one saved record: read-only text + compliance JSON download."""
+    comp = entry.get("compliance") or {}
+    full_text = comp.get("full_text", "") or entry.get("full_text", "")
+    st.markdown(f"**{idx_label}** · `{entry.get('published_at', '')}`")
+    st.text(full_text)
+    sents = comp.get("sentences") or []
+    if sents:
+        st.caption("Sentences")
+        for row in sents:
+            if isinstance(row, dict):
+                st.markdown(f"{row.get('index', '')}. {row.get('text', '')}")
+            else:
+                st.markdown(f"- {row}")
+    payload = json.dumps(comp, ensure_ascii=False, indent=2)
+    safe_ts = "".join(c if c.isalnum() else "_" for c in entry.get("published_at", "export"))[:40]
+    eid = entry.get("id") or idx_label
+    st.download_button(
+        label="Download compliance JSON",
+        data=payload,
+        file_name=f"compliance_{safe_ts}_{str(eid)[:8]}.json",
+        mime="application/json",
+        key=f"{widget_key_prefix}dl_hist_{eid}",
+    )
 
 
 def _init_session_state() -> None:
@@ -522,23 +599,26 @@ with tab_workflow:
             _sync_safety_texts_from_widgets()
             lines = [it["text"].strip() for it in st.session_state.safety_items if it["text"].strip()]
             full_text = "\n".join(lines)
+            entry_id = str(uuid.uuid4())
+            published_at = datetime.now(timezone.utc).isoformat()
+            compliance = build_compliance_payload(
+                full_text=full_text,
+                lines=lines,
+                published_at=published_at,
+                entry_id=entry_id,
+            )
             entry = {
-                "published_at": datetime.now(timezone.utc).isoformat(),
-                "full_text": full_text,
-                "sentences": lines,
-                "classifier_model_id": TOXIC_CLF_MODEL_ID,
-                "per_sentence": [
-                    {
-                        "text": it["text"].strip(),
-                        "label": it.get("label"),
-                        "score": it.get("score"),
-                        "is_toxic": it.get("is_toxic"),
-                    }
-                    for it in st.session_state.safety_items
-                ],
+                "id": entry_id,
+                "published_at": published_at,
+                "compliance": compliance,
             }
-            st.session_state.publish_history.append(entry)
-            _save_publish_history(st.session_state.publish_history)
+            # New list assignment so Streamlit persists session_state (avoid .append() on nested list).
+            updated_hist = list(st.session_state.publish_history) + [entry]
+            st.session_state.publish_history = updated_hist
+            try:
+                _save_publish_history(updated_hist)
+            except OSError as exc:
+                st.warning(f"Saved in this session only (could not write file): {exc}")
             st.success("Published and saved to history.")
             st.session_state.wizard_step = 1
             st.session_state.safety_items = []
@@ -581,9 +661,9 @@ with tab_workflow:
             with col_meta:
                 if it.get("checked"):
                     if it.get("is_toxic"):
-                        st.error(f"Toxic risk: {it.get('label')} ({it.get('score', 0):.3f})")
+                        st.error("Sensitive content, please modify")
                     else:
-                        st.success(f"OK: {it.get('label')} ({it.get('score', 0):.3f})")
+                        st.success("OK")
                 else:
                     st.info("Not checked yet")
 
@@ -605,18 +685,67 @@ with tab_workflow:
         if not st.session_state.safety_items:
             st.warning("No sentences. Go back to step 1 or add a sentence manually.")
 
+    # --- Compliant history on main workflow tab (read-only; fixes visibility after publish)
+    _ph = st.session_state.publish_history
+    if _ph:
+        st.divider()
+        st.subheader("Compliant saved records")
+        st.caption(
+            "Read-only (not editable). Expand a row to view full text and download its compliance JSON."
+        )
+        for i, entry in enumerate(reversed(_ph)):
+            when = entry.get("published_at", "")
+            n = len(_ph) - i
+            with st.expander(f"{n}. {when}"):
+                _render_readonly_history_entry(
+                    entry,
+                    idx_label=f"Record #{n}",
+                    widget_key_prefix="wf_tab_",
+                )
+        _bundle_wf = json.dumps(
+            {"records": [e.get("compliance", {}) for e in _ph]},
+            ensure_ascii=False,
+            indent=2,
+        )
+        st.download_button(
+            label="Download all compliance JSON (bundle)",
+            data=_bundle_wf,
+            file_name="compliance_history_bundle.json",
+            mime="application/json",
+            key="wf_tab_dl_compliance_bundle",
+        )
+
 with tab_history:
     st.subheader("Publication history")
     st.caption(
         f"Stored at `app/data/{HISTORY_JSON_PATH.name}` "
-        "(on Streamlit Cloud the file is ephemeral unless you add persistent storage)."
+        "(on Streamlit Cloud the file is ephemeral unless you add persistent storage). "
+        "Saved text is read-only; download the compliance JSON for submission."
     )
     hist = st.session_state.publish_history
     if not hist:
-        st.info("No publications yet.")
+        st.info("No publications yet. Complete step 2 and click **Publish (save to history)**.")
     else:
         for i, entry in enumerate(reversed(hist)):
             when = entry.get("published_at", "")
-            with st.expander(f"{len(hist) - i}. {when}"):
-                st.write(entry.get("full_text", ""))
-                st.json(entry)
+            n = len(hist) - i
+            with st.expander(f"{n}. {when} — click to view (read-only)"):
+                _render_readonly_history_entry(
+                    entry,
+                    idx_label=f"Record #{n}",
+                    widget_key_prefix="hist_tab_",
+                )
+
+    if hist:
+        bundle = json.dumps(
+            {"records": [e.get("compliance", {}) for e in hist]},
+            ensure_ascii=False,
+            indent=2,
+        )
+        st.download_button(
+            label="Download all compliance JSON (bundle)",
+            data=bundle,
+            file_name="compliance_history_bundle.json",
+            mime="application/json",
+            key="hist_tab_dl_compliance_bundle",
+        )
