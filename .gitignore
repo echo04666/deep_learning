@@ -1,5 +1,6 @@
 # Environments & tooling
 .venv/
+.venv-test-crash/
 venv/
 .env
 .cursor/
@@ -35,3 +36,6 @@ data/processed/*
 !data/processed/.gitkeep
 models/finetuned/*
 !models/finetuned/.gitkeep
+
+# App runtime (local publish history)
+app/data/publish_history.json

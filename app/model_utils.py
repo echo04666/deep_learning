@@ -184,7 +184,7 @@ def get_text_generation_pipeline(
         device_map: str | dict = "auto" if torch.cuda.is_available() else {"": "cpu"}
         _cached_model = AutoModelForCausalLM.from_pretrained(
             TEXT_GEN_MODEL_ID,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=device_map,
             low_cpu_mem_usage=True,
             **hub_kw,
@@ -226,9 +226,9 @@ def generate_ugc_text(
     *,
     system_prompt: str | None = None,
     use_chinese_roleplay_wrap: bool = False,
-    max_new_tokens: int = 512,
-    temperature: float = 0.5,
-    top_p: float = 0.7,
+    max_new_tokens: int = 512, # Maximum number of tokens to generate，could be adjusted by the user
+    temperature: float = 0.5, # Creativity level, could be adjusted by the user
+    top_p: float = 0.7, # Word-choice diversity, could be adjusted by the user
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
     no_repeat_ngram_size: int | None = None,
