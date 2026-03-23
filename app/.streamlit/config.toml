@@ -1,0 +1,5 @@
+# Streamlit's file watcher introspects all loaded modules and hits `torch.classes`,
+# which breaks PyTorch's __getattr__ (see local_sources_watcher extract_paths + torch._classes).
+# Disabling auto-reload avoids noisy tracebacks; after editing code, refresh the browser or restart.
+[server]
+fileWatcherType = "none"

@@ -1,0 +1,36 @@
+# Environments & tooling
+.venv/
+venv/
+.env
+.cursor/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Vendored deps (not app source)
+.pydeps/
+
+# Runtime outputs
+exports/
+*.log
+
+# Generated images in repo root (regenerate locally if needed)
+chinese_safe_output.png
+output.png
+
+# Large datasets / weights (keep placeholders only via git add)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/finetuned/*
+!models/finetuned/.gitkeep
