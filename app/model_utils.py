@@ -5,10 +5,8 @@ Uses standard ``transformers`` AutoModelForCausalLM + AutoTokenizer.
 
 # from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Callable
 
 import torch
@@ -272,35 +270,3 @@ def generate_ugc_text(
     generated_text = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
     return generated_text, elapsed_sec, messages
 
-
-def _device_note() -> str:
-    if torch.cuda.is_available():
-        name = torch.cuda.get_device_name(0)
-        return f"cuda: {name}"
-    return "cpu"
-
-
-def build_generation_export_dict(
-    *,
-    generated_text: str,
-    messages: list[dict[str, str]],
-    generation_params: dict[str, Any],
-    elapsed_sec: float,
-    model_id: str = TEXT_GEN_MODEL_ID,
-) -> dict[str, Any]:
-    """Build a JSON-serializable dict for one generation run."""
-    return {
-        "model_id": model_id,
-        "messages": messages,
-        "generated_text": generated_text,
-        "generation_params": generation_params,
-        "elapsed_sec": round(elapsed_sec, 4),
-        "device_note": _device_note(),
-        "exported_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def save_generation_json(data: dict[str, Any], path: str) -> None:
-    """Write export dict to a UTF-8 JSON file."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)

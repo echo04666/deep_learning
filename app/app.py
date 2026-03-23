@@ -30,13 +30,10 @@ from model_utils import (
     DEFAULT_NARRATIVE_GEN_REQUIREMENTS,
     DEFAULT_NARRATIVE_PLOT_BEATS,
     DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH,
-    TEXT_GEN_MODEL_ID,
-    build_generation_export_dict,
     build_narrative_user_prompt,
     generate_ugc_text,
     get_text_generation_pipeline,
     normalize_and_truncate_prompt,
-    resolve_eos_token_id,
 )
 from toxic_classification_pipeline import (
     MAX_MANUAL_SENTENCE_CHARS,
@@ -152,8 +149,6 @@ def _render_readonly_history_entry(
 
 def _init_session_state() -> None:
     """One-time session defaults."""
-    if "last_export" not in st.session_state:
-        st.session_state.last_export = None
     if "wizard_step" not in st.session_state:
         st.session_state.wizard_step = 1
     if "generated_text" not in st.session_state:
@@ -187,10 +182,6 @@ def _load_text_generation_pipeline_cached():
 def _load_text_classification_pipeline_cached():
     """Lazy load pipeline 2 (same pattern as course notebook)."""
     return get_text_classification_pipeline()
-
-
-def _clear_last_export() -> None:
-    st.session_state["last_export"] = None
 
 
 def _sync_safety_texts_from_widgets() -> None:
@@ -303,6 +294,11 @@ def _remove_sentence_item(item_id: str) -> None:
     st.session_state.safety_items = [
         x for x in st.session_state.safety_items if x["id"] != item_id
     ]
+
+
+def _queue_recheck(item_id: str) -> None:
+    """Defer single-sentence classify to the main script so ``st.spinner`` can show."""
+    st.session_state["_pending_recheck_id"] = item_id
 
 
 # --- UI ---
@@ -423,13 +419,11 @@ with tab_workflow:
         gs = st.text_area("Style", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["style"], height=68, key="nar_g_style")
         gl = st.text_area("Length / word count", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["length"], height=68, key="nar_g_length")
 
-    col_run, col_clear = st.columns(2)
+    col_run, _col_placeholder = st.columns(2)
     run_clicked = col_run.button("Generate", type="primary")
-    col_clear.button("Clear last JSON export", on_click=_clear_last_export)
     st.caption("The first load will require downloading the model, please be patient ~")
 
     if run_clicked:
-        st.session_state.last_export = None
         if prompt_source == "Free-form mode":
             raw_user_prompt = free_form_prompt
         else:
@@ -485,21 +479,9 @@ with tab_workflow:
             st.stop()
         loading_status.success("Model loaded successfully.")
 
-        gen_params = {
-            "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "do_sample": do_sample,
-            "repetition_penalty": repetition_penalty,
-            "no_repeat_ngram_size": no_repeat_ngram,
-            "eos_token_id": resolve_eos_token_id(pipe.tokenizer),
-            "use_chinese_roleplay_wrap": use_cn_wrap,
-            "prompt_length_status": prompt_length_status,
-        }
-
         try:
             with st.spinner("Generating text..."):
-                generated_text, elapsed_sec, messages = generate_ugc_text(
+                generated_text, elapsed_sec, _messages = generate_ugc_text(
                     pipe,
                     trimmed,
                     system_prompt=system_prompt,
@@ -522,15 +504,6 @@ with tab_workflow:
         st.subheader("Generated text")
         st.write(generated_text)
 
-        export = build_generation_export_dict(
-            generated_text=generated_text,
-            messages=messages,
-            generation_params=gen_params,
-            elapsed_sec=elapsed_sec,
-            model_id=TEXT_GEN_MODEL_ID,
-        )
-        st.session_state.last_export = export
-
     # Show last generated text if we did not just run (rerun / step 2 back)
     elif st.session_state.generated_text and st.session_state.generated_text.strip():
         st.subheader("Current generated text")
@@ -539,7 +512,7 @@ with tab_workflow:
     # Place AFTER generation updates session_state so disabled= is correct on the same run as Generate.
     has_generated = bool((st.session_state.get("generated_text") or "").strip())
     go_safety = st.button(
-        "安全检测 (step 2)",
+        "Safety Check (Step 2)",
         type="secondary",
         key="btn_go_safety_step2",
         help="Split the last generated text into sentences and open the safety review step.",
@@ -556,20 +529,6 @@ with tab_workflow:
             st.session_state["_last_cls_error"] = None
             st.rerun()
 
-    if st.session_state.last_export is not None:
-        st.subheader("Export JSON")
-        payload = st.session_state.last_export
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        file_name = f"qwen_generation_{ts}.json"
-        st.download_button(
-            label="Download JSON",
-            data=json.dumps(payload, ensure_ascii=False, indent=2),
-            file_name=file_name,
-            mime="application/json",
-        )
-        with st.expander("Preview JSON"):
-            st.json(payload)
-
     # --- Step 2: safety ---
     if st.session_state.wizard_step == 2:
         st.divider()
@@ -580,13 +539,19 @@ with tab_workflow:
             st.error(f"Classification error: {st.session_state[err_key]}")
             st.session_state[err_key] = None
 
+        _pending_recheck = st.session_state.pop("_pending_recheck_id", None)
+        if _pending_recheck:
+            with st.spinner("Rechecking this sentence with the classifier…"):
+                _run_classify_on_item(_pending_recheck)
+
         c_back, c_full, c_pub = st.columns([1, 1, 2])
         if c_back.button("Back to step 1"):
             st.session_state.wizard_step = 1
             st.session_state.safety_items = []
             st.rerun()
         if c_full.button("Run full check on all sentences", type="primary"):
-            _run_classify_all()
+            with st.spinner("Checking all sentences…"):
+                _run_classify_all()
             st.rerun()
 
         publish_ok = _all_sentences_safe_and_checked()
@@ -672,7 +637,7 @@ with tab_workflow:
                 b1.button(
                     "Recheck",
                     key=f"recheck_{it['id']}",
-                    on_click=_run_classify_on_item,
+                    on_click=_queue_recheck,
                     args=(it["id"],),
                 )
                 b2.button(
@@ -717,11 +682,6 @@ with tab_workflow:
 
 with tab_history:
     st.subheader("Publication history")
-    st.caption(
-        f"Stored at `app/data/{HISTORY_JSON_PATH.name}` "
-        "(on Streamlit Cloud the file is ephemeral unless you add persistent storage). "
-        "Saved text is read-only; download the compliance JSON for submission."
-    )
     hist = st.session_state.publish_history
     if not hist:
         st.info("No publications yet. Complete step 2 and click **Publish (save to history)**.")
