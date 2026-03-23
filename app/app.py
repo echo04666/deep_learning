@@ -157,6 +157,8 @@ def _init_session_state() -> None:
         st.session_state.safety_items = []
     if "publish_history" not in st.session_state:
         st.session_state.publish_history = _load_publish_history()
+    if "prompt_source_mode" not in st.session_state:
+        st.session_state.prompt_source_mode = "Narrative template"
 
 
 _init_session_state()
@@ -301,6 +303,18 @@ def _queue_recheck(item_id: str) -> None:
     st.session_state["_pending_recheck_id"] = item_id
 
 
+def _jump_to_first_sentence() -> None:
+    """Set sentence focus to the first row."""
+    st.session_state["_active_sentence_idx"] = 0
+
+
+def _jump_to_last_sentence() -> None:
+    """Set sentence focus to the last row."""
+    total = len(st.session_state.get("safety_items", []))
+    if total > 0:
+        st.session_state["_active_sentence_idx"] = total - 1
+
+
 # --- UI ---
 st.title("Game UGC — Text generation & safety check")
 
@@ -374,9 +388,10 @@ with tab_workflow:
 
     prompt_source = st.radio(
         "Prompt source",
-        ("Free-form mode", "Narrative template"),
+        ("Narrative template", "Free-form mode"),
         horizontal=True,
         help="Narrative template calls model_utils.build_narrative_user_prompt.",
+        key="prompt_source_mode",
     )
 
     free_form_prompt = ""
@@ -539,10 +554,9 @@ with tab_workflow:
             st.error(f"Classification error: {st.session_state[err_key]}")
             st.session_state[err_key] = None
 
-        _pending_recheck = st.session_state.pop("_pending_recheck_id", None)
-        if _pending_recheck:
-            with st.spinner("Rechecking this sentence with the classifier…"):
-                _run_classify_on_item(_pending_recheck)
+        _pending_recheck = st.session_state.get("_pending_recheck_id")
+        if "_active_sentence_idx" not in st.session_state:
+            st.session_state["_active_sentence_idx"] = 0
 
         c_back, c_full, c_pub = st.columns([1, 1, 2])
         if c_back.button("Back to step 1"):
@@ -610,9 +624,40 @@ with tab_workflow:
                     st.session_state.safety_items = st.session_state.safety_items + [
                         new_sentence_item(ok_text)
                     ]
+                    st.session_state["new_sentence_draft_input"] = ""
+                    st.session_state["_add_sentence_success_msg"] = "Successful"
+                    st.session_state["_active_sentence_idx"] = len(st.session_state.safety_items) - 1
                     st.rerun()
 
+        _add_msg = st.session_state.pop("_add_sentence_success_msg", None)
+        if _add_msg:
+            st.success(_add_msg)
+
+        total_sentences = len(st.session_state.safety_items)
+        if total_sentences > 0:
+            active_idx = int(st.session_state.get("_active_sentence_idx", 0))
+            active_idx = max(0, min(active_idx, total_sentences - 1))
+            st.session_state["_active_sentence_idx"] = active_idx
+
+            nav_cols = st.columns(3)
+            if active_idx > 0:
+                nav_cols[0].button(
+                    "Jump to first sentence",
+                    key="jump_first_sentence",
+                    on_click=_jump_to_first_sentence,
+                )
+            nav_cols[1].caption(f"Current: Sentence {active_idx + 1}/{total_sentences}")
+            if active_idx < total_sentences - 1:
+                nav_cols[2].button(
+                    "Jump to last sentence",
+                    key="jump_last_sentence",
+                    on_click=_jump_to_last_sentence,
+                )
+
         for idx, it in enumerate(st.session_state.safety_items):
+            is_active_sentence = idx == st.session_state.get("_active_sentence_idx", 0)
+            if is_active_sentence:
+                st.caption(f"Viewing sentence {idx + 1} (current)")
             st.markdown(f"**Sentence {idx + 1}**")
             col_t, col_meta = st.columns([3, 1])
             with col_t:
@@ -624,6 +669,7 @@ with tab_workflow:
                     label_visibility="collapsed",
                 )
             with col_meta:
+                is_rechecking_this_row = _pending_recheck == it["id"]
                 if it.get("checked"):
                     if it.get("is_toxic"):
                         st.error("Sensitive content, please modify")
@@ -631,21 +677,40 @@ with tab_workflow:
                         st.success("OK")
                 else:
                     st.info("Not checked yet")
+                if is_rechecking_this_row:
+                    st.caption("Rechecking...")
 
                 b1, b2 = st.columns(2)
                 # Use on_click so the handler runs reliably; reassign list so session_state updates stick.
                 b1.button(
-                    "Recheck",
+                    "Rechecking..." if is_rechecking_this_row else "Recheck",
                     key=f"recheck_{it['id']}",
                     on_click=_queue_recheck,
                     args=(it["id"],),
+                    disabled=is_rechecking_this_row,
                 )
                 b2.button(
                     "Delete",
                     key=f"del_{it['id']}",
                     on_click=_remove_sentence_item,
                     args=(it["id"],),
+                    disabled=is_rechecking_this_row,
                 )
+
+        # Run deferred single-row recheck after rendering once so user can see status near the sentence.
+        if _pending_recheck:
+            _pending_idx = None
+            for _i, _it in enumerate(st.session_state.safety_items, start=1):
+                if _it["id"] == _pending_recheck:
+                    _pending_idx = _i
+                    break
+            if _pending_idx is not None:
+                st.session_state["_active_sentence_idx"] = _pending_idx - 1
+            _label = f"Sentence {_pending_idx}" if _pending_idx is not None else "selected sentence"
+            with st.spinner(f"Rechecking {_label} with the classifier..."):
+                _run_classify_on_item(_pending_recheck)
+            st.session_state.pop("_pending_recheck_id", None)
+            st.rerun()
 
         if not st.session_state.safety_items:
             st.warning("No sentences. Go back to step 1 or add a sentence manually.")
