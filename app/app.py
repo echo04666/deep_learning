@@ -117,11 +117,18 @@ def _clear_last_export() -> None:
 
 
 def _sync_safety_texts_from_widgets() -> None:
-    """Copy current text_area values into safety_items (source of truth for logic)."""
+    """Copy current text_area values into safety_items (source of truth for logic).
+
+    Reassigns the whole list so Streamlit persists nested updates in st.session_state.
+    """
+    new_items = []
     for it in st.session_state.safety_items:
-        key = f"area_{it['id']}"
+        row = dict(it)
+        key = f"area_{row['id']}"
         if key in st.session_state:
-            it["text"] = str(st.session_state[key]).strip()
+            row["text"] = str(st.session_state[key]).strip()
+        new_items.append(row)
+    st.session_state.safety_items = new_items
 
 
 def _all_sentences_safe_and_checked() -> bool:
@@ -140,28 +147,40 @@ def _all_sentences_safe_and_checked() -> bool:
 
 
 def _run_classify_on_item(item_id: str) -> None:
-    """Classify one row by id after syncing widget text."""
+    """Classify one row by id after syncing widget text.
+
+    Replaces that row with a new dict and reassigns the list (Streamlit session_state).
+    """
     _sync_safety_texts_from_widgets()
     pipe = _load_text_classification_pipeline_cached()
-    for it in st.session_state.safety_items:
+    items = list(st.session_state.safety_items)
+    for i, it in enumerate(items):
         if it["id"] != item_id:
             continue
         text = it["text"].strip()
         if not text:
-            it["label"] = ""
-            it["score"] = 0.0
-            it["is_toxic"] = False
-            it["checked"] = True
+            items[i] = {
+                **it,
+                "label": "",
+                "score": 0.0,
+                "is_toxic": False,
+                "checked": True,
+            }
+            st.session_state.safety_items = items
             return
         try:
             out = classify_one_sentence(pipe, text)
         except Exception as exc:
             st.session_state["_last_cls_error"] = str(exc)
             return
-        it["label"] = out["label"]
-        it["score"] = out["score"]
-        it["is_toxic"] = out["is_toxic"]
-        it["checked"] = True
+        items[i] = {
+            **it,
+            "label": out["label"],
+            "score": out["score"],
+            "is_toxic": out["is_toxic"],
+            "checked": True,
+        }
+        st.session_state.safety_items = items
         return
 
 
@@ -170,23 +189,31 @@ def _run_classify_all() -> None:
     _sync_safety_texts_from_widgets()
     pipe = _load_text_classification_pipeline_cached()
     err = None
-    for it in st.session_state.safety_items:
+    items = list(st.session_state.safety_items)
+    for i, it in enumerate(items):
         text = it["text"].strip()
         if not text:
-            it["label"] = ""
-            it["score"] = 0.0
-            it["is_toxic"] = False
-            it["checked"] = True
+            items[i] = {
+                **it,
+                "label": "",
+                "score": 0.0,
+                "is_toxic": False,
+                "checked": True,
+            }
             continue
         try:
             out = classify_one_sentence(pipe, text)
         except Exception as exc:
             err = str(exc)
             break
-        it["label"] = out["label"]
-        it["score"] = out["score"]
-        it["is_toxic"] = out["is_toxic"]
-        it["checked"] = True
+        items[i] = {
+            **it,
+            "label": out["label"],
+            "score": out["score"],
+            "is_toxic": out["is_toxic"],
+            "checked": True,
+        }
+    st.session_state.safety_items = items
     if err:
         st.session_state["_last_cls_error"] = err
 
@@ -470,10 +497,6 @@ with tab_workflow:
     if st.session_state.wizard_step == 2:
         st.divider()
         st.subheader("Step 2 — Safety check (per sentence)")
-        st.caption(
-            f"Classifier: `{TOXIC_CLF_MODEL_ID}`. "
-            f"Manual add/edit lines are limited to **{MAX_MANUAL_SENTENCE_CHARS}** characters."
-        )
 
         err_key = "_last_cls_error"
         if err_key in st.session_state and st.session_state[err_key]:
@@ -539,7 +562,9 @@ with tab_workflow:
                 if msg:
                     st.error(msg)
                 else:
-                    st.session_state.safety_items.append(new_sentence_item(ok_text))
+                    st.session_state.safety_items = st.session_state.safety_items + [
+                        new_sentence_item(ok_text)
+                    ]
                     st.rerun()
 
         for idx, it in enumerate(st.session_state.safety_items):
@@ -563,12 +588,19 @@ with tab_workflow:
                     st.info("Not checked yet")
 
                 b1, b2 = st.columns(2)
-                if b1.button("Recheck", key=f"recheck_{it['id']}"):
-                    _run_classify_on_item(it["id"])
-                    st.rerun()
-                if b2.button("Delete", key=f"del_{it['id']}"):
-                    _remove_sentence_item(it["id"])
-                    st.rerun()
+                # Use on_click so the handler runs reliably; reassign list so session_state updates stick.
+                b1.button(
+                    "Recheck",
+                    key=f"recheck_{it['id']}",
+                    on_click=_run_classify_on_item,
+                    args=(it["id"],),
+                )
+                b2.button(
+                    "Delete",
+                    key=f"del_{it['id']}",
+                    on_click=_remove_sentence_item,
+                    args=(it["id"],),
+                )
 
         if not st.session_state.safety_items:
             st.warning("No sentences. Go back to step 1 or add a sentence manually.")

@@ -48,10 +48,27 @@ def get_text_classification_pipeline() -> Any:
     return _text_classification_pipe
 
 
+# Chunks that are only punctuation / spaces (no letters, digits, or CJK) attach to a neighbor
+# so ``。`` or ``！！`` do not become their own "sentence" after regex split.
+_PUNCT_OR_SPACE_ONLY = re.compile(
+    r"^[\s。！？.!?,，、；;:：\"\"''（）()【】\[\]—…·]+$"
+)
+
+
+def _is_punctuation_only_chunk(s: str) -> bool:
+    """True if s has no real words (only punctuation and whitespace)."""
+    if not s or not s.strip():
+        return True
+    if _PUNCT_OR_SPACE_ONLY.fullmatch(s):
+        return True
+    return False
+
+
 def split_into_sentences(text: str) -> list[str]:
     """Split mixed Chinese/English UGC text into sentence-like units.
 
-    Uses Chinese and ASCII end punctuation plus newlines. Keeps non-empty segments only.
+    Uses Chinese and ASCII end punctuation plus newlines. Merges punctuation-only
+    fragments (e.g. a lone ``。`` after split) onto the previous or next real segment.
 
     Args:
         text: Raw generated or edited text.
@@ -65,12 +82,38 @@ def split_into_sentences(text: str) -> list[str]:
 
     # Split after 。！？ or . ! ? and also on line breaks.
     parts = re.split(r"(?<=[。！？!?])\s*|\n+", text)
-    sentences = []
+    raw: list[str] = []
     for p in parts:
         s = p.strip()
         if s:
-            sentences.append(s)
-    return sentences if sentences else [text]
+            raw.append(s)
+    if not raw:
+        return [text]
+
+    merged: list[str] = []
+    pending_leading_punct = ""
+
+    for s in raw:
+        if _is_punctuation_only_chunk(s):
+            if merged:
+                merged[-1] = merged[-1] + s
+            else:
+                # No previous sentence: keep until we can prepend to real text.
+                pending_leading_punct += s
+            continue
+
+        if pending_leading_punct:
+            s = pending_leading_punct + s
+            pending_leading_punct = ""
+        merged.append(s)
+
+    if pending_leading_punct:
+        if merged:
+            merged[-1] = merged[-1] + pending_leading_punct
+        else:
+            merged.append(pending_leading_punct.strip())
+
+    return merged if merged else [text]
 
 
 def _normalize_label(label: str) -> str:
