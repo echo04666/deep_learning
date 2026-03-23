@@ -319,27 +319,10 @@ with tab_workflow:
         gs = st.text_area("Style", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["style"], height=68, key="nar_g_style")
         gl = st.text_area("Length / word count", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["length"], height=68, key="nar_g_length")
 
-    col_run, col_clear, col_go_safety = st.columns([1, 1, 1])
+    col_run, col_clear = st.columns(2)
     run_clicked = col_run.button("Generate", type="primary")
     col_clear.button("Clear last JSON export", on_click=_clear_last_export)
-    go_safety = col_go_safety.button(
-        "安全检测 (step 2)",
-        type="secondary",
-        help="Split the last generated text into sentences and open the safety review step.",
-        disabled=not st.session_state.generated_text.strip(),
-    )
     st.caption("The first load will require downloading the model, please be patient ~")
-
-    if go_safety:
-        body = st.session_state.generated_text.strip()
-        if not body:
-            st.error("No generated text yet. Please run **Generate** first.")
-        else:
-            parts = split_into_sentences(body)
-            st.session_state.safety_items = [new_sentence_item(s) for s in parts]
-            st.session_state.wizard_step = 2
-            st.session_state["_last_cls_error"] = None
-            st.rerun()
 
     if run_clicked:
         st.session_state.last_export = None
@@ -445,9 +428,29 @@ with tab_workflow:
         st.session_state.last_export = export
 
     # Show last generated text if we did not just run (rerun / step 2 back)
-    if st.session_state.generated_text and not run_clicked:
+    elif st.session_state.generated_text and st.session_state.generated_text.strip():
         st.subheader("Current generated text")
         st.write(st.session_state.generated_text)
+
+    # Place AFTER generation updates session_state so disabled= is correct on the same run as Generate.
+    has_generated = bool((st.session_state.get("generated_text") or "").strip())
+    go_safety = st.button(
+        "安全检测 (step 2)",
+        type="secondary",
+        key="btn_go_safety_step2",
+        help="Split the last generated text into sentences and open the safety review step.",
+        disabled=not has_generated,
+    )
+    if go_safety:
+        body = st.session_state.generated_text.strip()
+        if not body:
+            st.error("No generated text yet. Please run **Generate** first.")
+        else:
+            parts = split_into_sentences(body)
+            st.session_state.safety_items = [new_sentence_item(s) for s in parts]
+            st.session_state.wizard_step = 2
+            st.session_state["_last_cls_error"] = None
+            st.rerun()
 
     if st.session_state.last_export is not None:
         st.subheader("Export JSON")
