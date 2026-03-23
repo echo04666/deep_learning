@@ -1,41 +1,29 @@
 """
-Pipeline 2: Chinese toxic / safe text classification.
-
-Follows the lazy-loading pattern from DL_NIJIALU_21237096.ipynb
-(global cache + get_*_pipeline + transformers.pipeline).
-
+Pipeline 2: Chinese toxic  text classification.
+global cache + get_*_pipeline + transformers.pipeline
 Model: fine-tuned on ToxiCN (binary labels non_toxic / toxic in training notebook).
 """
 
 from __future__ import annotations
 
 import re
-import uuid
+import uuid # for generating unique sentence ids
 from typing import Any
 
 from transformers import pipeline
 
-# --- Constants (same Hub id for model and tokenizer) ---
+# model settings
 TOXIC_CLF_MODEL_ID = "echovivi/CustomModel_bertToxiCN"
 
-# If the argmax label is toxic with score below this, treat as uncertain (still block publish).
-TOXIC_SCORE_THRESHOLD = 0.5
-
-# Manual sentence input limit (aligned with docs/03).
+# Manual sentence input limit
 MAX_MANUAL_SENTENCE_CHARS = 100
 
-# Global pipeline cache to avoid repeated loading (one load per Python process).
+# Global pipeline cache to avoid repeated loading
 _text_classification_pipe: Any | None = None
 
 
 def get_text_classification_pipeline() -> Any:
     """Lazily load the text-classification pipeline from Hugging Face Hub.
-
-    Returns:
-        A transformers ``pipeline`` object for ``task="text-classification"``.
-
-    Note:
-        First call may download weights; keep UI messages patient on Streamlit Cloud.
     """
     global _text_classification_pipe
     if _text_classification_pipe is None:
@@ -61,7 +49,6 @@ _DASH_ONLY_LINE = re.compile(
 
 def _merge_dash_only_segments(sentences: list[str]) -> list[str]:
     """Merge segments that are only hyphens/dashes/spaces into neighbors.
-
     Catches lone ``-`` lines that should not be a separate detection unit.
     """
     if not sentences:
@@ -96,7 +83,6 @@ def _is_punctuation_only_chunk(s: str) -> bool:
 
 def split_into_sentences(text: str) -> list[str]:
     """Split mixed Chinese/English UGC text into sentence-like units.
-
     Uses Chinese and ASCII end punctuation plus newlines. Merges punctuation-only
     fragments (e.g. a lone ``。`` after split) onto the previous or next real segment.
 
@@ -104,7 +90,7 @@ def split_into_sentences(text: str) -> list[str]:
         text: Raw generated or edited text.
 
     Returns:
-        List of stripped sentence strings (may be one element if no delimiter found).
+        List of stripped sentence strings.
     """
     text = text.strip()
     if not text:
@@ -158,37 +144,15 @@ def _normalize_label(label: str) -> str:
     return label.strip().lower().replace(" ", "_").replace("-", "_")
 
 
-def is_predicted_toxic(label: str, score: float) -> bool:
-    """Return True if this prediction should count as toxic for publish gating.
-
-    Training used id2label: 0 -> non_toxic, 1 -> toxic. Hub models usually return
-    string labels from config; we also tolerate LABEL_0 / LABEL_1 style.
-
-    Args:
-        label: Top-1 class name from the pipeline.
-        score: Confidence score for the top-1 class (HF text-classification).
-
-    Returns:
-        True when the content is treated as toxic / unsafe for publishing.
-    """
+def is_predicted_toxic(label: str) -> bool:
+    """Binary toxic decision for Hub labels: non_toxic / toxic."""
     lab = _normalize_label(label)
-
-    # Clear safe names
-    if lab in ("non_toxic", "nontoxic", "not_toxic", "safe", "label_0", "0"):
+    if lab == "toxic":
+        return True
+    if lab == "non_toxic":
         return False
-
-    # Clear toxic names (must check non_toxic before generic "toxic" substring rules)
-    if lab in ("toxic", "label_1", "1", "pos", "positive"):
-        return score >= TOXIC_SCORE_THRESHOLD
-
-    # Fallback: substring heuristics for unexpected label strings
-    if "non_toxic" in lab or "nontoxic" in lab:
-        return False
-    if "toxic" in lab or "poison" in lab:
-        return score >= TOXIC_SCORE_THRESHOLD
-
-    # Unknown label: do not block publish on score alone (still show label in UI).
-    return False
+    # Defensive default: if label is unexpected, block publish for safety.
+    return True
 
 
 def classify_one_sentence(pipe: Any, text: str) -> dict[str, Any]:
@@ -215,7 +179,7 @@ def classify_one_sentence(pipe: Any, text: str) -> dict[str, Any]:
     first = outputs[0]
     label = str(first["label"])
     score = float(first["score"])
-    is_toxic = is_predicted_toxic(label, score)
+    is_toxic = is_predicted_toxic(label)
     return {
         "label": label,
         "score": score,
