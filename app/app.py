@@ -21,6 +21,7 @@ from model_utils import (
     DEFAULT_NARRATIVE_ENV,
     DEFAULT_NARRATIVE_GEN_REQUIREMENTS,
     DEFAULT_NARRATIVE_PLOT_BEATS,
+    DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH,
     TEXT_GEN_MODEL_ID,
     build_generation_export_dict,
     build_narrative_user_prompt,
@@ -73,7 +74,10 @@ with st.sidebar:
         "Custom system prompt (optional)",
         value="",
         height=120,
-        help="Leave empty to use the default Chinese UGC assistant system prompt in model_utils.",
+        help=(
+            "Leave empty: **Free-form** uses default UGC assistant; **Narrative template** uses "
+            "`DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH` in model_utils (dialogue-focused, anti-scaffold)."
+        ),
     )
 
 st.subheader("User prompt")
@@ -94,7 +98,7 @@ if prompt_source == "Free-form text":
     )
 else:
     st.caption(
-        "Fields are assembled into one markdown user message via `build_narrative_user_prompt` in `model_utils.py`."
+        "Fields are assembled into one compact user message via `build_narrative_user_prompt` in `model_utils.py`."
     )
     col_a, col_b = st.columns(2)
     with col_a:
@@ -167,7 +171,16 @@ if run_clicked:
             f"(max {MAX_PROMPT_CHARS}) to protect context length."
         )
 
-    system_prompt = system_custom.strip() or None
+    if system_custom.strip():
+        system_prompt = system_custom.strip()
+    elif prompt_source == "Narrative template (same builder as course notebook)":
+        system_prompt = DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH
+    else:
+        system_prompt = None
+
+    narrative_mode = prompt_source == "Narrative template (same builder as course notebook)"
+    repetition_penalty = 1.15 if narrative_mode else 1.05
+    no_repeat_ngram = 3 if narrative_mode else None
 
     try:
         pipe = _load_text_generation_pipeline_cached()
@@ -182,7 +195,8 @@ if run_clicked:
         "temperature": temperature,
         "top_p": top_p,
         "do_sample": do_sample,
-        "repetition_penalty": 1.05,
+        "repetition_penalty": repetition_penalty,
+        "no_repeat_ngram_size": no_repeat_ngram,
         "eos_token_id": resolve_eos_token_id(pipe.tokenizer),
         "use_chinese_roleplay_wrap": use_cn_wrap,
     }
@@ -198,6 +212,8 @@ if run_clicked:
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=do_sample,
+                repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram,
             )
     except Exception as exc:
         st.error(f"Generation failed: {exc}")
