@@ -59,7 +59,7 @@ from model_utils import (
 
 @st.cache_resource(
     show_spinner=(
-        "Loading language model — first run downloads ~1.3GB GGUF + tokenizer files from Hugging Face "
+        "Loading language model — first run downloads ~1.3GB GGUF (weights + tokenizer vocab) from Hugging Face "
         "(Community Cloud CPU can still take several minutes; keep this tab open, check Logs for tqdm)"
     ),
 )
@@ -267,7 +267,7 @@ col_run, col_clear = st.columns(2)
 run_clicked = col_run.button("Generate", type="primary")
 col_clear.button("Clear last JSON export", on_click=_clear_last_export)
 st.caption(
-    "First **Generate** downloads **Character-GGUF** Q4_K_M (~1.3GB) plus tokenizer files; dequantizing into "
+    "First **Generate** downloads **Character-GGUF** Q4_K_M (~1.3GB, includes tokenizer); dequantizing into "
     "PyTorch uses extra RAM briefly. On **Streamlit Community Cloud** this can still take **several minutes**; "
     "check **Logs** (Manage app). In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
 )

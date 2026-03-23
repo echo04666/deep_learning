@@ -1,8 +1,9 @@
 """
 Shared Hugging Face text-generation helpers for Index-1.9B Character (roleplay).
 
-Weights default to GGUF Q4_K_M in ``IndexTeam/Index-1.9B-Character-GGUF`` (Transformers ``gguf_file``);
-tokenizer and ``apply_chat_template`` come from ``IndexTeam/Index-1.9B-Character`` (trust_remote_code).
+Weights default to GGUF Q4_K_M in ``IndexTeam/Index-1.9B-Character-GGUF`` (Transformers ``gguf_file``).
+Tokenizer **must** use the same ``gguf_file`` as the model (Llama weights + Index vocab from the file);
+loading ``IndexTokenizer`` from the PyTorch Character repo causes vocab/embed size mismatch and crashes.
 
 We lazy-load model + tokenizer and expose the same project function names as docs/02_text_generation.md.
 """
@@ -20,15 +21,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Constants (project docs / model card) ---
 # Text weights: GGUF quant in IndexTeam/Index-1.9B-Character-GGUF (llama.cpp export; ~1.3GB for Q4_K_M).
-# Tokenizer + chat template: IndexTeam/Index-1.9B-Character (custom IndexTokenizer; trust_remote_code).
+# Tokenizer + chat template are read from the GGUF file metadata (same file as weights).
 # Transformers loads GGUF via gguf_file (dequantizes into PyTorch for generate()); needs `gguf` package.
 # Alternative 4-bit file in the same repo: ggml-model-Q4_0.gguf (~1.26 GB, slightly smaller).
 TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Character-GGUF"
 TEXT_GEN_GGUF_FILE = "ggml-model-Q4_K_M.gguf"
 TEXT_GEN_WEIGHTS_REVISION: str | None = "27db5d0b0411f1e34358064ba2a033f57608b404"
 
-TEXT_GEN_TOKENIZER_ID = "IndexTeam/Index-1.9B-Character"
-TEXT_GEN_TOKENIZER_REVISION: str | None = "5d9e9b693781ead815b4099471c31b67ae78722b"
 MAX_PROMPT_CHARS = 4000
 
 # --- Narrative prompt template (shared by notebook + Streamlit; same as 04_text_generation_peach_pipeline) ---
@@ -161,16 +160,6 @@ def _hub_revision_kw(revision: str | None) -> dict[str, Any]:
     return {}
 
 
-def _hub_trust_remote_code_tokenizer() -> bool:
-    """True when tokenizer repo ships custom tokenization Python (Index Character, etc.)."""
-    return TEXT_GEN_TOKENIZER_ID.startswith(("ClosedCharacter/", "IndexTeam/"))
-
-
-def _tokenizer_use_fast() -> bool:
-    """SentencePiece-only legacy tokenizers often require use_fast=False."""
-    return not _hub_trust_remote_code_tokenizer()
-
-
 def resolve_eos_token_id(tokenizer: Any) -> int:
     """Prefer tokenizer eos; fall back to pad, then Peach legacy id."""
     tid = getattr(tokenizer, "eos_token_id", None)
@@ -281,20 +270,21 @@ def get_text_generation_pipeline(
 
     if _peach_tokenizer is None:
         report(
-            f"Loading **tokenizer** (`{TEXT_GEN_TOKENIZER_ID}`)… "
-            "First run may download files from the Hub."
+            f"Loading **tokenizer** from GGUF (`{TEXT_GEN_GGUF_FILE}`)… "
+            "Must match model file to avoid embedding/vocab mismatch."
         )
         try:
             _peach_tokenizer = AutoTokenizer.from_pretrained(
-                TEXT_GEN_TOKENIZER_ID,
-                use_fast=_tokenizer_use_fast(),
-                trust_remote_code=_hub_trust_remote_code_tokenizer(),
-                **_hub_revision_kw(TEXT_GEN_TOKENIZER_REVISION),
+                TEXT_GEN_MODEL_ID,
+                gguf_file=TEXT_GEN_GGUF_FILE,
+                trust_remote_code=False,
+                **_hub_revision_kw(TEXT_GEN_WEIGHTS_REVISION),
             )
         except Exception as exc:
             raise RuntimeError(
-                "Failed to load tokenizer from Hugging Face Hub. "
-                "Check network access and model availability."
+                "Failed to load tokenizer from GGUF. "
+                "Install `gguf`, check network, and ensure transformers supports GGUF tokenizers. "
+                f"Underlying error ({type(exc).__name__}): {exc}"
             ) from exc
         report("**Tokenizer** loaded.")
     else:
