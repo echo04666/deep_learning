@@ -1,6 +1,6 @@
 # llama-cpp-python: native GGUF loader (stays quantized in memory, uses mmap — avoids OOM on Cloud).
-# MUST use the prebuilt CPU wheel index — without it, pip/uv compiles llama.cpp from source (~15 min).
---extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+# First deploy compiles from source (~10-15 min); Streamlit Cloud caches it for subsequent deploys.
+# The prebuilt wheels from abetlen.github.io are musl-only and incompatible with Cloud's glibc.
 llama-cpp-python
 
 # Streamlit
