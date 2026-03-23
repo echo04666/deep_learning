@@ -20,13 +20,17 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Constants (project docs / model card) ---
-# Text weights: GGUF quant in IndexTeam/Index-1.9B-Character-GGUF (llama.cpp export; ~1.3GB for Q4_K_M).
-# Tokenizer + chat template are read from the GGUF file metadata (same file as weights).
-# Transformers loads GGUF via gguf_file (dequantizes into PyTorch for generate()); needs `gguf` package.
-# Alternative 4-bit file in the same repo: ggml-model-Q4_0.gguf (~1.26 GB, slightly smaller).
+# Model weights: GGUF Q4_K_M from IndexTeam/Index-1.9B-Character-GGUF (~1.3GB download).
+# Tokenizer: from the original PyTorch repo IndexTeam/Index-1.9B-Character (has complete BPE merges).
+#   DO NOT load tokenizer from GGUF — the file lacks merge data and transformers hangs at
+#   "building merges on the fly" indefinitely (confirmed by Cloud logs).
+# Both repos share the same vocabulary; token IDs are compatible for generate().
 TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Character-GGUF"
 TEXT_GEN_GGUF_FILE = "ggml-model-Q4_K_M.gguf"
 TEXT_GEN_WEIGHTS_REVISION: str | None = "27db5d0b0411f1e34358064ba2a033f57608b404"
+
+TEXT_GEN_TOKENIZER_ID = "IndexTeam/Index-1.9B-Character"
+TEXT_GEN_TOKENIZER_REVISION: str | None = "5d9e9b693781ead815b4099471c31b67ae78722b"
 
 MAX_PROMPT_CHARS = 4000
 
@@ -282,26 +286,25 @@ def get_text_generation_pipeline(
 
     if _peach_tokenizer is None:
         report(
-            f"Loading **tokenizer** from GGUF (`{TEXT_GEN_GGUF_FILE}`)… "
-            "Must match model file to avoid embedding/vocab mismatch."
+            f"Loading **tokenizer** from `{TEXT_GEN_TOKENIZER_ID}` (original repo with complete BPE merges)…"
         )
         # #region agent log
-        print(f"[DBG-18a7ba] H2/tokenizer_start {_mem_mb()}", flush=True)
+        print(f"[DBG-18a7ba] H2/tokenizer_start src={TEXT_GEN_TOKENIZER_ID} {_mem_mb()}", flush=True)
         # #endregion
         try:
             _peach_tokenizer = AutoTokenizer.from_pretrained(
-                TEXT_GEN_MODEL_ID,
-                gguf_file=TEXT_GEN_GGUF_FILE,
-                trust_remote_code=False,
-                **_hub_revision_kw(TEXT_GEN_WEIGHTS_REVISION),
+                TEXT_GEN_TOKENIZER_ID,
+                use_fast=False,
+                trust_remote_code=True,
+                **_hub_revision_kw(TEXT_GEN_TOKENIZER_REVISION),
             )
         except Exception as exc:
             # #region agent log
             print(f"[DBG-18a7ba] H4/tokenizer_error {type(exc).__name__}: {exc}", flush=True)
             # #endregion
             raise RuntimeError(
-                "Failed to load tokenizer from GGUF. "
-                "Install `gguf`, check network, and ensure transformers supports GGUF tokenizers. "
+                "Failed to load tokenizer from Hugging Face Hub. "
+                "Check network access and model availability. "
                 f"Underlying error ({type(exc).__name__}): {exc}"
             ) from exc
         # #region agent log
