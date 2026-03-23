@@ -152,7 +152,8 @@ def _init_session_state() -> None:
         st.session_state.publish_history = _load_publish_history()
     if "prompt_source_mode" not in st.session_state:
         st.session_state.prompt_source_mode = "Narrative template"
-
+    if "_active_sentence_idx" not in st.session_state:
+        st.session_state["_active_sentence_idx"] = 0
 
 
 @st.cache_resource(
@@ -293,20 +294,6 @@ def _queue_recheck(item_id: str) -> None:
     st.session_state["_pending_recheck_id"] = item_id
 
 
-def _jump_to_first_sentence() -> None:
-    """Set sentence focus to the first row."""
-    st.session_state["_active_sentence_idx"] = 0
-
-
-def _jump_to_last_sentence() -> None:
-    """Set sentence focus to the last row."""
-    total = len(st.session_state.get("safety_items", []))
-    if total > 0:
-        st.session_state["_active_sentence_idx"] = total - 1
-
-
-
-
 def main() -> None:
     """Build and run the Streamlit UI (course entry point)."""
     st.set_page_config(
@@ -383,6 +370,33 @@ def main() -> None:
                     f"Default for Narrative template:\n{DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH}"
                 ),
             )
+            if step == 2:
+                st.divider()
+                st.subheader("Sentence navigation")
+                _n_nav = len(st.session_state.safety_items)
+                if _n_nav > 0:
+                    _ai_nav = int(st.session_state.get("_active_sentence_idx", 0))
+                    _ai_nav = max(0, min(_ai_nav, _n_nav - 1))
+                    if st.button(
+                        "Jump to first sentence",
+                        key="sidebar_jump_first_sentence",
+                        disabled=(_ai_nav == 0),
+                        help="Focus the first sentence in the list (main area).",
+                    ):
+                        st.session_state["_active_sentence_idx"] = 0
+                    if st.button(
+                        "Jump to last sentence",
+                        key="sidebar_jump_last_sentence",
+                        disabled=(_ai_nav >= _n_nav - 1),
+                        help="Focus the last sentence in the list (main area).",
+                    ):
+                        st.session_state["_active_sentence_idx"] = _n_nav - 1
+                    _ai_nav = int(st.session_state.get("_active_sentence_idx", 0))
+                    _ai_nav = max(0, min(_ai_nav, _n_nav - 1))
+                    st.session_state["_active_sentence_idx"] = _ai_nav
+                    st.caption(f"Current: sentence {_ai_nav + 1} / {_n_nav}")
+                else:
+                    st.caption("No sentences in Step 2 yet.")
     
         st.subheader("Step 1 — User prompt")
     
@@ -555,8 +569,6 @@ def main() -> None:
                 st.session_state[err_key] = None
     
             _pending_recheck = st.session_state.get("_pending_recheck_id")
-            if "_active_sentence_idx" not in st.session_state:
-                st.session_state["_active_sentence_idx"] = 0
     
             c_back, c_full, c_pub = st.columns([1, 1, 2])
             if c_back.button("Back to step 1"):
@@ -634,68 +646,55 @@ def main() -> None:
                 st.success(_add_msg)
     
             total_sentences = len(st.session_state.safety_items)
+            active_idx = int(st.session_state.get("_active_sentence_idx", 0))
             if total_sentences > 0:
-                active_idx = int(st.session_state.get("_active_sentence_idx", 0))
                 active_idx = max(0, min(active_idx, total_sentences - 1))
                 st.session_state["_active_sentence_idx"] = active_idx
-    
-                nav_cols = st.columns(3)
-                if active_idx > 0:
-                    nav_cols[0].button(
-                        "Jump to first sentence",
-                        key="jump_first_sentence",
-                        on_click=_jump_to_first_sentence,
-                    )
-                nav_cols[1].caption(f"Current: Sentence {active_idx + 1}/{total_sentences}")
-                if active_idx < total_sentences - 1:
-                    nav_cols[2].button(
-                        "Jump to last sentence",
-                        key="jump_last_sentence",
-                        on_click=_jump_to_last_sentence,
-                    )
+                st.caption(f"**Current sentence:** {active_idx + 1} / {total_sentences} (use sidebar to jump)")
     
             for idx, it in enumerate(st.session_state.safety_items):
-                is_active_sentence = idx == st.session_state.get("_active_sentence_idx", 0)
+                is_active_sentence = idx == active_idx
+                _exp_label = f"Sentence {idx + 1}"
                 if is_active_sentence:
-                    st.caption(f"Viewing sentence {idx + 1} (current)")
-                st.markdown(f"**Sentence {idx + 1}**")
-                col_t, col_meta = st.columns([3, 1])
-                with col_t:
-                    st.text_area(
-                        "Text",
-                        value=it["text"],
-                        height=100,
-                        key=f"area_{it['id']}",
-                        label_visibility="collapsed",
-                    )
-                with col_meta:
-                    is_rechecking_this_row = _pending_recheck == it["id"]
-                    if it.get("checked"):
-                        if it.get("is_toxic"):
-                            st.error("Sensitive content, please modify")
+                    _exp_label += " — current"
+                with st.expander(_exp_label, expanded=is_active_sentence):
+                    col_t, col_meta = st.columns([3, 1])
+                    with col_t:
+                        st.text_area(
+                            "Text",
+                            value=it["text"],
+                            height=100,
+                            key=f"area_{it['id']}",
+                            label_visibility="collapsed",
+                        )
+                    with col_meta:
+                        is_rechecking_this_row = _pending_recheck == it["id"]
+                        if it.get("checked"):
+                            if it.get("is_toxic"):
+                                st.error("Sensitive content, please modify")
+                            else:
+                                st.success("OK")
                         else:
-                            st.success("OK")
-                    else:
-                        st.info("Not checked yet")
-                    if is_rechecking_this_row:
-                        st.caption("Rechecking...")
+                            st.info("Not checked yet")
+                        if is_rechecking_this_row:
+                            st.caption("Rechecking...")
     
-                    b1, b2 = st.columns(2)
-                    # Use on_click so the handler runs reliably; reassign list so session_state updates stick.
-                    b1.button(
-                        "Rechecking..." if is_rechecking_this_row else "Recheck",
-                        key=f"recheck_{it['id']}",
-                        on_click=_queue_recheck,
-                        args=(it["id"],),
-                        disabled=is_rechecking_this_row,
-                    )
-                    b2.button(
-                        "Delete",
-                        key=f"del_{it['id']}",
-                        on_click=_remove_sentence_item,
-                        args=(it["id"],),
-                        disabled=is_rechecking_this_row,
-                    )
+                        b1, b2 = st.columns(2)
+                        # Use on_click so the handler runs reliably; reassign list so session_state updates stick.
+                        b1.button(
+                            "Rechecking..." if is_rechecking_this_row else "Recheck",
+                            key=f"recheck_{it['id']}",
+                            on_click=_queue_recheck,
+                            args=(it["id"],),
+                            disabled=is_rechecking_this_row,
+                        )
+                        b2.button(
+                            "Delete",
+                            key=f"del_{it['id']}",
+                            on_click=_remove_sentence_item,
+                            args=(it["id"],),
+                            disabled=is_rechecking_this_row,
+                        )
     
             # Run deferred single-row recheck after rendering once so user can see status near the sentence.
             if _pending_recheck:
