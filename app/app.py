@@ -29,6 +29,18 @@ from model_utils import (
     resolve_eos_token_id,
 )
 
+
+@st.cache_resource(
+    show_spinner=(
+        "Loading language model — first run downloads several GB from Hugging Face "
+        "(often 10–25+ minutes on Community Cloud CPU; keep this tab open, check Logs for tqdm)"
+    ),
+)
+def _load_text_generation_pipeline_cached():
+    """One load per Cloud replica; avoids reloading on every Streamlit rerun."""
+    return get_text_generation_pipeline()
+
+
 st.set_page_config(page_title="Game UGC — Text Generation", layout="wide")
 st.title("Game UGC — Text Generation")
 st.info(
@@ -204,6 +216,11 @@ def _clear_last_export() -> None:
 col_run, col_clear = st.columns(2)
 run_clicked = col_run.button("Generate", type="primary")
 col_clear.button("Clear last JSON export", on_click=_clear_last_export)
+st.caption(
+    "First **Generate** pulls **Index-1.9B** (~4GB+) into memory. On **Streamlit Community Cloud** "
+    "this can take **many minutes**; the UI may look stuck while **Logs** (Manage app) show download progress. "
+    "In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
+)
 
 if run_clicked:
     st.session_state.last_export = None
@@ -247,9 +264,8 @@ if run_clicked:
     system_prompt = system_custom.strip() or None
 
     try:
-        with st.status("Loading model…", expanded=True) as load_status:
-            pipe = get_text_generation_pipeline(on_loading_step=load_status.write)
-            load_status.update(label="Model load complete", state="complete")
+        # Cached load: Streamlit shows a long-running spinner on first miss (Cloud-friendly).
+        pipe = _load_text_generation_pipeline_cached()
     except RuntimeError as exc:
         st.error(str(exc))
         st.stop()

@@ -22,7 +22,7 @@
 
 填写 **Hugging Face Model URL**、**Streamlit Cloud App URL**、**GitHub URL** 到报告与本文档末尾（提交前）。
 
-**Streamlit Cloud**：仓库根目录的 [`runtime.txt`](runtime.txt) 固定 **Python 3.12**；依赖见 [`app/requirements.txt`](app/requirements.txt)（含与 Streamlit 兼容的 **altair 4.x**，避免 `altair.vegalite.v4` 缺失）。
+**Streamlit Cloud**：在应用的 **Settings → Advanced settings** 里把 **Python version** 选为 **3.12**（日志里若仍是 3.14，说明仅放 [`runtime.txt`](runtime.txt) 可能无效，以界面为准）。依赖见 [`app/requirements.txt`](app/requirements.txt)（含 **altair 4.x**）。首次点 **Generate** 会下载约 **4GB+** 模型，免费档 CPU 上常需 **十几分钟以上**，页面会像卡住，请到 **Manage app → Logs** 看 Hugging Face 下载进度。
 
 ## Python / PyTorch（本地跑 Streamlit）
 
