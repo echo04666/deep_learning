@@ -22,6 +22,7 @@ Thumbs.db
 # Runtime outputs
 exports/
 *.log
+.hf_cache/
 
 # Generated images in repo root (regenerate locally if needed)
 chinese_safe_output.png
