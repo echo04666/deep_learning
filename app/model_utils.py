@@ -21,6 +21,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # Index-1.9B ships pytorch_model.bin only → requires torch>=2.6 (CVE-2025-32434). Linux/Streamlit Cloud
 # usually has pip wheels; macOS Intel pip often stops at torch 2.2 — develop locally with conda or run on Cloud.
 TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Chat"
+# Pin Hub git revision so trust_remote_code files do not float on each deploy (stops HF "new version"
+# warnings). From https://huggingface.co/api/models/IndexTeam/Index-1.9B-Chat → "sha". Set to None to
+# track default branch (not recommended for production). Update if you change TEXT_GEN_MODEL_ID.
+TEXT_GEN_MODEL_REVISION: str | None = "ff8442ed6b2024f816f195431333ad47cf2b5f54"
 MAX_PROMPT_CHARS = 4000
 
 # --- Narrative prompt template (shared by notebook + Streamlit; same as 04_text_generation_peach_pipeline) ---
@@ -144,6 +148,13 @@ PEACH_ROLEPLAY_SUFFIX = "\n\nYou must response in Chinese."
 
 # Legacy Peach-style models used a fixed eos id; generic models use tokenizer.eos_token_id.
 PEACH_EOS_TOKEN_ID = 7
+
+
+def _hub_load_kw() -> dict[str, Any]:
+    """Optional Hugging Face Hub kwargs (e.g. pinned revision)."""
+    if TEXT_GEN_MODEL_REVISION:
+        return {"revision": TEXT_GEN_MODEL_REVISION}
+    return {}
 
 
 def _hub_trust_remote_code() -> bool:
@@ -274,6 +285,7 @@ def get_text_generation_pipeline(
                 TEXT_GEN_MODEL_ID,
                 use_fast=_tokenizer_use_fast(),
                 trust_remote_code=_hub_trust_remote_code(),
+                **_hub_load_kw(),
             )
         except Exception as exc:
             raise RuntimeError(
@@ -294,10 +306,11 @@ def get_text_generation_pipeline(
             # Repos with only pytorch_model.bin need torch>=2.6 (CVE-2025-32434); safetensors does not.
             _peach_model = AutoModelForCausalLM.from_pretrained(
                 TEXT_GEN_MODEL_ID,
-                torch_dtype=dtype,
+                dtype=dtype,
                 trust_remote_code=_hub_trust_remote_code(),
                 device_map=_device_map_for_load(),
                 low_cpu_mem_usage=True,
+                **_hub_load_kw(),
             )
         except Exception as exc:
             raise RuntimeError(
