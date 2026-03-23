@@ -1,5 +1,5 @@
 """
-Streamlit app: Chinese game UGC text generation (llama-cpp-python + GGUF).
+Streamlit app: Chinese game UGC text generation with Qwen2.5-0.5B-Instruct (transformers).
 
 Course layout: constants / loaders / inference helpers live in model_utils.py.
 Safety classification pipeline will be added in a later milestone (docs/01).
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-st.set_page_config(page_title="Game UGC — Text Generation", layout="wide")
+st.set_page_config(page_title="Game UGC \u2014 Text Generation", layout="wide")
 
 from model_utils import (
     MAX_PROMPT_CHARS,
@@ -28,12 +28,13 @@ from model_utils import (
     get_pipeline_device_summary,
     get_text_generation_pipeline,
     normalize_and_truncate_prompt,
+    resolve_eos_token_id,
 )
 
 
 @st.cache_resource(
     show_spinner=(
-        "Loading language model via llama.cpp — first run downloads ~1.3GB GGUF from Hugging Face "
+        "Loading Qwen2.5-0.5B-Instruct \u2014 first run downloads ~1GB from Hugging Face "
         "(Community Cloud CPU: may take a few minutes; keep this tab open, check Logs)"
     ),
 )
@@ -42,15 +43,15 @@ def _load_text_generation_pipeline_cached():
     return get_text_generation_pipeline()
 
 
-st.title("Game UGC — Text Generation")
+st.title("Game UGC \u2014 Text Generation")
 st.info(
     "This page runs the **text-generation** step only. "
     "A second Hugging Face pipeline (toxic / safety **classification**) will be added here "
     "in a later milestone (see project docs)."
 )
 st.warning(
-    f"Current Hub model: **{TEXT_GEN_MODEL_ID}** (GGUF Q4_K_M via llama.cpp). "
-    "Runs on CPU; larger models may need a GPU instance."
+    f"Current Hub model: **{TEXT_GEN_MODEL_ID}** (0.5B, safetensors, float16 via transformers). "
+    "Runs on CPU; generation is slower than GPU but fits Community Cloud memory."
 )
 
 if "last_export" not in st.session_state:
@@ -81,7 +82,7 @@ prompt_source = st.radio(
     "Prompt source",
     ("Free-form text", "Narrative template (same builder as course notebook)"),
     horizontal=True,
-    help="Narrative template calls model_utils.build_narrative_user_prompt — same logic as notebooks/04_text_generation_peach_pipeline.ipynb.",
+    help="Narrative template calls model_utils.build_narrative_user_prompt.",
 )
 
 free_form_prompt = ""
@@ -98,116 +99,31 @@ else:
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("**Character A**")
-        na = st.text_area(
-            "Name",
-            value=DEFAULT_NARRATIVE_CHAR_A["name"],
-            height=68,
-            key="nar_a_name",
-        )
-        ia = st.text_area(
-            "Identity / role",
-            value=DEFAULT_NARRATIVE_CHAR_A["identity"],
-            height=68,
-            key="nar_a_identity",
-        )
-        pa = st.text_area(
-            "Personality",
-            value=DEFAULT_NARRATIVE_CHAR_A["personality"],
-            height=68,
-            key="nar_a_personality",
-        )
-        sa = st.text_area(
-            "Current state",
-            value=DEFAULT_NARRATIVE_CHAR_A["state"],
-            height=68,
-            key="nar_a_state",
-        )
+        na = st.text_area("Name", value=DEFAULT_NARRATIVE_CHAR_A["name"], height=68, key="nar_a_name")
+        ia = st.text_area("Identity / role", value=DEFAULT_NARRATIVE_CHAR_A["identity"], height=68, key="nar_a_identity")
+        pa = st.text_area("Personality", value=DEFAULT_NARRATIVE_CHAR_A["personality"], height=68, key="nar_a_personality")
+        sa = st.text_area("Current state", value=DEFAULT_NARRATIVE_CHAR_A["state"], height=68, key="nar_a_state")
     with col_b:
         st.markdown("**Character B**")
-        nb = st.text_area(
-            "Name",
-            value=DEFAULT_NARRATIVE_CHAR_B["name"],
-            height=68,
-            key="nar_b_name",
-        )
-        ib = st.text_area(
-            "Identity / role",
-            value=DEFAULT_NARRATIVE_CHAR_B["identity"],
-            height=68,
-            key="nar_b_identity",
-        )
-        pb = st.text_area(
-            "Personality",
-            value=DEFAULT_NARRATIVE_CHAR_B["personality"],
-            height=68,
-            key="nar_b_personality",
-        )
-        sb = st.text_area(
-            "Current state",
-            value=DEFAULT_NARRATIVE_CHAR_B["state"],
-            height=68,
-            key="nar_b_state",
-        )
+        nb = st.text_area("Name", value=DEFAULT_NARRATIVE_CHAR_B["name"], height=68, key="nar_b_name")
+        ib = st.text_area("Identity / role", value=DEFAULT_NARRATIVE_CHAR_B["identity"], height=68, key="nar_b_identity")
+        pb = st.text_area("Personality", value=DEFAULT_NARRATIVE_CHAR_B["personality"], height=68, key="nar_b_personality")
+        sb = st.text_area("Current state", value=DEFAULT_NARRATIVE_CHAR_B["state"], height=68, key="nar_b_state")
 
     st.markdown("**Setting**")
-    ep = st.text_area(
-        "Location",
-        value=DEFAULT_NARRATIVE_ENV["place"],
-        height=80,
-        key="nar_env_place",
-    )
-    ea = st.text_area(
-        "Atmosphere",
-        value=DEFAULT_NARRATIVE_ENV["atmosphere"],
-        height=80,
-        key="nar_env_atmosphere",
-    )
+    ep = st.text_area("Location", value=DEFAULT_NARRATIVE_ENV["place"], height=80, key="nar_env_place")
+    ea = st.text_area("Atmosphere", value=DEFAULT_NARRATIVE_ENV["atmosphere"], height=80, key="nar_env_atmosphere")
 
     st.markdown("**Plot beats (four)**")
-    p1 = st.text_area(
-        "Beat 1",
-        value=DEFAULT_NARRATIVE_PLOT_BEATS[0],
-        height=72,
-        key="nar_p1",
-    )
-    p2 = st.text_area(
-        "Beat 2",
-        value=DEFAULT_NARRATIVE_PLOT_BEATS[1],
-        height=72,
-        key="nar_p2",
-    )
-    p3 = st.text_area(
-        "Beat 3",
-        value=DEFAULT_NARRATIVE_PLOT_BEATS[2],
-        height=72,
-        key="nar_p3",
-    )
-    p4 = st.text_area(
-        "Beat 4",
-        value=DEFAULT_NARRATIVE_PLOT_BEATS[3],
-        height=72,
-        key="nar_p4",
-    )
+    p1 = st.text_area("Beat 1", value=DEFAULT_NARRATIVE_PLOT_BEATS[0], height=72, key="nar_p1")
+    p2 = st.text_area("Beat 2", value=DEFAULT_NARRATIVE_PLOT_BEATS[1], height=72, key="nar_p2")
+    p3 = st.text_area("Beat 3", value=DEFAULT_NARRATIVE_PLOT_BEATS[2], height=72, key="nar_p3")
+    p4 = st.text_area("Beat 4", value=DEFAULT_NARRATIVE_PLOT_BEATS[3], height=72, key="nar_p4")
 
     st.markdown("**Output requirements**")
-    gf = st.text_area(
-        "Format",
-        value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["format"],
-        height=68,
-        key="nar_g_format",
-    )
-    gs = st.text_area(
-        "Style",
-        value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["style"],
-        height=68,
-        key="nar_g_style",
-    )
-    gl = st.text_area(
-        "Length / word count",
-        value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["length"],
-        height=68,
-        key="nar_g_length",
-    )
+    gf = st.text_area("Format", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["format"], height=68, key="nar_g_format")
+    gs = st.text_area("Style", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["style"], height=68, key="nar_g_style")
+    gl = st.text_area("Length / word count", value=DEFAULT_NARRATIVE_GEN_REQUIREMENTS["length"], height=68, key="nar_g_length")
 
 def _clear_last_export() -> None:
     st.session_state["last_export"] = None
@@ -217,7 +133,7 @@ col_run, col_clear = st.columns(2)
 run_clicked = col_run.button("Generate", type="primary")
 col_clear.button("Clear last JSON export", on_click=_clear_last_export)
 st.caption(
-    "First **Generate** downloads the GGUF (~1.3GB) and loads it via **llama.cpp** (stays quantized, uses mmap). "
+    "First **Generate** downloads the model (~1GB safetensors) and loads it in float16. "
     "On **Streamlit Community Cloud** this may take **a few minutes**; check **Logs** (Manage app). "
     "In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
 )
@@ -229,18 +145,8 @@ if run_clicked:
     else:
         try:
             raw_user_prompt = build_narrative_user_prompt(
-                char_a={
-                    "name": na,
-                    "identity": ia,
-                    "personality": pa,
-                    "state": sa,
-                },
-                char_b={
-                    "name": nb,
-                    "identity": ib,
-                    "personality": pb,
-                    "state": sb,
-                },
+                char_a={"name": na, "identity": ia, "personality": pa, "state": sa},
+                char_b={"name": nb, "identity": ib, "personality": pb, "state": sb},
                 env={"place": ep, "atmosphere": ea},
                 plot_beats=[p1, p2, p3, p4],
                 gen_requirements={"format": gf, "style": gs, "length": gl},
@@ -277,6 +183,7 @@ if run_clicked:
         "top_p": top_p,
         "do_sample": do_sample,
         "repetition_penalty": 1.05,
+        "eos_token_id": resolve_eos_token_id(pipe.tokenizer),
         "use_chinese_roleplay_wrap": use_cn_wrap,
     }
 
@@ -313,7 +220,7 @@ if st.session_state.last_export is not None:
     st.subheader("Export JSON")
     payload = st.session_state.last_export
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    file_name = f"peach_generation_{ts}.json"
+    file_name = f"qwen_generation_{ts}.json"
     st.download_button(
         label="Download JSON",
         data=json.dumps(payload, ensure_ascii=False, indent=2),

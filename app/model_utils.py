@@ -1,60 +1,60 @@
 """
-Shared text-generation helpers for Index-1.9B Character (roleplay) via llama-cpp-python.
+Shared Hugging Face text-generation helpers for Qwen2.5-0.5B-Instruct.
 
-Model weights: GGUF Q4_K_M from ``IndexTeam/Index-1.9B-Character-GGUF`` loaded **natively** by
-llama.cpp (no dequantization — stays quantized in memory, ~1.3GB with mmap). This avoids the
-transformers GGUF→fp16 path that OOM-kills on Streamlit Cloud free tier (~1GB container limit).
-
-Chat template embedded in the GGUF metadata is used automatically by ``create_chat_completion``.
+Uses standard ``transformers`` AutoModelForCausalLM + AutoTokenizer (no trust_remote_code).
+Safetensors format, ~1GB in float16. Chat template (ChatML ``<|im_start|>``) is built into
+the tokenizer config; ``apply_chat_template`` works out of the box.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-# --- Constants (project docs / model card) ---
-TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Character-GGUF"
-TEXT_GEN_GGUF_FILE = "ggml-model-Q4_K_M.gguf"
-TEXT_GEN_WEIGHTS_REVISION: str | None = "27db5d0b0411f1e34358064ba2a033f57608b404"
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# --- Constants ---
+TEXT_GEN_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
+TEXT_GEN_MODEL_REVISION: str | None = "7ae557604adf67be50417f59c2c2f167def9a775"
 MAX_PROMPT_CHARS = 4000
 
 # --- Narrative prompt template (shared by notebook + Streamlit) ---
-NARRATIVE_EMPTY_PLACEHOLDER = "（未填写，请模型合理补全）"
+NARRATIVE_EMPTY_PLACEHOLDER = '\u201c\u672a\u586b\u5199\uff0c\u8bf7\u6a21\u578b\u5408\u7406\u8865\u5168\u201d'
 
 DEFAULT_NARRATIVE_CHAR_A: dict[str, str] = {
-    "name": "艾德莉娅",
-    "identity": "被放逐的精灵游侠，独来独往，擅长弓箭",
-    "personality": "外冷内热，对陌生人充满戒备，但内心渴望找到失散的族人，说话简短直接，不喜欢绕弯子",
-    "state": "身受轻伤，正在篝火旁处理伤口，处于疲惫状态",
+    "name": "\u827e\u5fb7\u8389\u5a05",
+    "identity": "\u88ab\u653e\u9010\u7684\u7cbe\u7075\u6e38\u4fa0\uff0c\u72ec\u6765\u72ec\u5f80\uff0c\u64c5\u957f\u5f13\u7bad",
+    "personality": "\u5916\u51b7\u5185\u70ed\uff0c\u5bf9\u964c\u751f\u4eba\u5145\u6ee1\u6212\u5907\uff0c\u4f46\u5185\u5fc3\u6e34\u671b\u627e\u5230\u5931\u6563\u7684\u65cf\u4eba\uff0c\u8bf4\u8bdd\u7b80\u77ed\u76f4\u63a5\uff0c\u4e0d\u559c\u6b22\u7ed5\u5f2f\u5b50",
+    "state": "\u8eab\u53d7\u8f7b\u4f24\uff0c\u6b63\u5728\u7bc5\u706b\u65c1\u5904\u7406\u4f24\u53e3\uff0c\u5904\u4e8e\u75b2\u60eb\u72b6\u6001",
 }
 
 DEFAULT_NARRATIVE_CHAR_B: dict[str, str] = {
-    "name": "罗根",
-    "identity": "流浪骑士，曾是王国军团的队长，现在为了寻找解药而游历",
-    "personality": "正直、略显话痨，喜欢用逻辑分析问题，有强烈的正义感",
-    "state": "刚刚从一场魔物袭击中救下了角色 A，自己也消耗了大量体力",
+    "name": "\u7f57\u6839",
+    "identity": "\u6d41\u6d6a\u9a91\u58eb\uff0c\u66fe\u662f\u738b\u56fd\u519b\u56e2\u7684\u961f\u957f\uff0c\u73b0\u5728\u4e3a\u4e86\u5bfb\u627e\u89e3\u836f\u800c\u6e38\u5386",
+    "personality": "\u6b63\u76f4\u3001\u7565\u663e\u8bdd\u75e8\uff0c\u559c\u6b22\u7528\u903b\u8f91\u5206\u6790\u95ee\u9898\uff0c\u6709\u5f3a\u70c8\u7684\u6b63\u4e49\u611f",
+    "state": "\u521a\u521a\u4ece\u4e00\u573a\u9b54\u7269\u88ad\u51fb\u4e2d\u6551\u4e0b\u4e86\u89d2\u8272 A\uff0c\u81ea\u5df1\u4e5f\u6d88\u8017\u4e86\u5927\u91cf\u4f53\u529b",
 }
 
 DEFAULT_NARRATIVE_ENV: dict[str, str] = {
-    "place": '幽暗的\u201c叹息森林\u201d深处，一棵巨大的古树根形成的天然洞穴内',
-    "atmosphere": '潮湿、阴冷，洞外下着大雨，远处偶尔传来狼嚎声，篝火是唯一的光源',
+    "place": '\u5e7d\u6697\u7684\u201c\u53f9\u606f\u68ee\u6797\u201d\u6df1\u5904\uff0c\u4e00\u68f5\u5de8\u5927\u7684\u53e4\u6811\u6839\u5f62\u6210\u7684\u5929\u7136\u6d1e\u7a74\u5185',
+    "atmosphere": '\u6f6e\u6e7f\u3001\u9634\u51b7\uff0c\u6d1e\u5916\u4e0b\u7740\u5927\u96e8\uff0c\u8fdc\u5904\u5076\u5c14\u4f20\u6765\u72fc\u568e\u58f0\uff0c\u7bc5\u706b\u662f\u552f\u4e00\u7684\u5149\u6e90',
 }
 
 DEFAULT_NARRATIVE_PLOT_BEATS: list[str] = [
-    '**开场（建立冲突）：** 角色 A 对角色 B 的救助并不领情，怀疑 B 是敌人派来的追兵，气氛紧张。',
-    '**转折（信息交换）：** 角色 B 为了消除误会，提到了自己在寻找一种名为\u201c星尘花\u201d的解药，这恰好与角色 A 正在寻找的族人下落有关。',
-    '**高潮（达成共识）：** 两人发现目标地点一致（都是前往废弃的\u201c灰烬神殿\u201d），但由于各自状态不佳，单独前往都是送死，不得不选择暂时结盟。',
-    '**结尾（引出任务）：** 对话结束于两人决定明天一早出发，并暗示了神殿中可能存在的巨大危险。',
+    '**\u5f00\u573a\uff08\u5efa\u7acb\u51b2\u7a81\uff09\uff1a** \u89d2\u8272 A \u5bf9\u89d2\u8272 B \u7684\u6551\u52a9\u5e76\u4e0d\u9886\u60c5\uff0c\u6000\u7591 B \u662f\u654c\u4eba\u6d3e\u6765\u7684\u8ffd\u5175\uff0c\u6c14\u6c1b\u7d27\u5f20\u3002',
+    '**\u8f6c\u6298\uff08\u4fe1\u606f\u4ea4\u6362\uff09\uff1a** \u89d2\u8272 B \u4e3a\u4e86\u6d88\u9664\u8bef\u4f1a\uff0c\u63d0\u5230\u4e86\u81ea\u5df1\u5728\u5bfb\u627e\u4e00\u79cd\u540d\u4e3a\u201c\u661f\u5c18\u82b1\u201d\u7684\u89e3\u836f\uff0c\u8fd9\u6070\u597d\u4e0e\u89d2\u8272 A \u6b63\u5728\u5bfb\u627e\u7684\u65cf\u4eba\u4e0b\u843d\u6709\u5173\u3002',
+    '**\u9ad8\u6f6e\uff08\u8fbe\u6210\u5171\u8bc6\uff09\uff1a** \u4e24\u4eba\u53d1\u73b0\u76ee\u6807\u5730\u70b9\u4e00\u81f4\uff08\u90fd\u662f\u524d\u5f80\u5e9f\u5f03\u7684\u201c\u7070\u70ec\u795e\u6bbf\u201d\uff09\uff0c\u4f46\u7531\u4e8e\u5404\u81ea\u72b6\u6001\u4e0d\u4f73\uff0c\u5355\u72ec\u524d\u5f80\u90fd\u662f\u9001\u6b7b\uff0c\u4e0d\u5f97\u4e0d\u9009\u62e9\u6682\u65f6\u7ed3\u76df\u3002',
+    '**\u7ed3\u5c3e\uff08\u5f15\u51fa\u4efb\u52a1\uff09\uff1a** \u5bf9\u8bdd\u7ed3\u675f\u4e8e\u4e24\u4eba\u51b3\u5b9a\u660e\u5929\u4e00\u65e9\u51fa\u53d1\uff0c\u5e76\u6697\u793a\u4e86\u795e\u6bbf\u4e2d\u53ef\u80fd\u5b58\u5728\u7684\u5de8\u5927\u5371\u9669\u3002',
 ]
 
 DEFAULT_NARRATIVE_GEN_REQUIREMENTS: dict[str, str] = {
-    "format": "包含对话行、动作描述和简短的环境描写。",
-    "style": "偏向西式奇幻/RPG风格，语言自然流畅，带有一定的文学性。",
-    "length": "约 300-500 字。",
+    "format": "\u5305\u542b\u5bf9\u8bdd\u884c\u3001\u52a8\u4f5c\u63cf\u8ff0\u548c\u7b80\u77ed\u7684\u73af\u5883\u63cf\u5199\u3002",
+    "style": "\u504f\u5411\u897f\u5f0f\u5947\u5e7b/RPG\u98ce\u683c\uff0c\u8bed\u8a00\u81ea\u7136\u6d41\u7545\uff0c\u5e26\u6709\u4e00\u5b9a\u7684\u6587\u5b66\u6027\u3002",
+    "length": "\u7ea6 300-500 \u5b57\u3002",
 }
 
 
@@ -63,7 +63,7 @@ def narrative_field_filled(
     *,
     empty_placeholder: str = NARRATIVE_EMPTY_PLACEHOLDER,
 ) -> str:
-    """Return stripped text, or placeholder if empty (notebook / UI structured fields)."""
+    """Return stripped text, or placeholder if empty."""
     stripped = (text or "").strip()
     return stripped if stripped else empty_placeholder
 
@@ -77,11 +77,7 @@ def build_narrative_user_prompt(
     gen_requirements: dict[str, str],
     empty_placeholder: str = NARRATIVE_EMPTY_PLACEHOLDER,
 ) -> str:
-    """
-    Assemble the game narrative user prompt (markdown) from structured fields.
-
-    Used by ``notebooks/04_text_generation_peach_pipeline.ipynb`` and ``app/app.py``.
-    """
+    """Assemble the game narrative user prompt (markdown) from structured fields."""
     if len(plot_beats) != 4:
         raise ValueError("plot_beats must contain exactly 4 strings.")
 
@@ -90,49 +86,48 @@ def build_narrative_user_prompt(
 
     a, b, e, g = char_a, char_b, env, gen_requirements
     p1, p2, p3, p4 = (nf(x) for x in plot_beats)
-    return f"""# 角色设定与世界观
+    return f"""# \u89d2\u8272\u8bbe\u5b9a\u4e0e\u4e16\u754c\u89c2
 
-你是一位专业的游戏叙事设计师。请根据以下设定的角色和情节，生成一段沉浸式的游戏内对话。对话需要符合角色性格，推动剧情发展，并包含环境描写或动作描述（即"叙事 prose"）。
+\u4f60\u662f\u4e00\u4f4d\u4e13\u4e1a\u7684\u6e38\u620f\u53d9\u4e8b\u8bbe\u8ba1\u5e08\u3002\u8bf7\u6839\u636e\u4ee5\u4e0b\u8bbe\u5b9a\u7684\u89d2\u8272\u548c\u60c5\u8282\uff0c\u751f\u6210\u4e00\u6bb5\u6c89\u6d78\u5f0f\u7684\u6e38\u620f\u5185\u5bf9\u8bdd\u3002\u5bf9\u8bdd\u9700\u8981\u7b26\u5408\u89d2\u8272\u6027\u683c\uff0c\u63a8\u52a8\u5267\u60c5\u53d1\u5c55\uff0c\u5e76\u5305\u542b\u73af\u5883\u63cf\u5199\u6216\u52a8\u4f5c\u63cf\u8ff0\uff08\u5373\u201c\u53d9\u4e8b prose\u201d\uff09\u3002
 
-## 角色信息
+## \u89d2\u8272\u4fe1\u606f
 
-- **角色 A：**
-  - **姓名：** {nf(a.get("name"))}
-  - **身份：** {nf(a.get("identity"))}
-  - **性格：** {nf(a.get("personality"))}
-  - **状态：** {nf(a.get("state"))}
+- **\u89d2\u8272 A\uff1a**
+  - **\u59d3\u540d\uff1a** {nf(a.get("name"))}
+  - **\u8eab\u4efd\uff1a** {nf(a.get("identity"))}
+  - **\u6027\u683c\uff1a** {nf(a.get("personality"))}
+  - **\u72b6\u6001\uff1a** {nf(a.get("state"))}
 
-- **角色 B：**
-  - **姓名：** {nf(b.get("name"))}
-  - **身份：** {nf(b.get("identity"))}
-  - **性格：** {nf(b.get("personality"))}
-  - **状态：** {nf(b.get("state"))}
+- **\u89d2\u8272 B\uff1a**
+  - **\u59d3\u540d\uff1a** {nf(b.get("name"))}
+  - **\u8eab\u4efd\uff1a** {nf(b.get("identity"))}
+  - **\u6027\u683c\uff1a** {nf(b.get("personality"))}
+  - **\u72b6\u6001\uff1a** {nf(b.get("state"))}
 
-## 环境背景
+## \u73af\u5883\u80cc\u666f
 
-- **地点：** {nf(e.get("place"))}
-- **氛围：** {nf(e.get("atmosphere"))}
+- **\u5730\u70b9\uff1a** {nf(e.get("place"))}
+- **\u6c1b\u56f4\uff1a** {nf(e.get("atmosphere"))}
 
-## 对话情节要求
+## \u5bf9\u8bdd\u60c5\u8282\u8981\u6c42
 
-请基于以下情节节点生成对话：
+\u8bf7\u57fa\u4e8e\u4ee5\u4e0b\u60c5\u8282\u8282\u70b9\u751f\u6210\u5bf9\u8bdd\uff1a
 
 1. {p1}
 2. {p2}
 3. {p3}
 4. {p4}
 
-## 生成要求
+## \u751f\u6210\u8981\u6c42
 
-- **格式：** {nf(g.get("format"))}
-- **风格：** {nf(g.get("style"))}
-- **字数：** {nf(g.get("length"))}
+- **\u683c\u5f0f\uff1a** {nf(g.get("format"))}
+- **\u98ce\u683c\uff1a** {nf(g.get("style"))}
+- **\u5b57\u6570\uff1a** {nf(g.get("length"))}
 """
 
-# Default system instruction: Chinese game UGC style.
 DEFAULT_SYSTEM_PROMPT_ZH = (
-    "你是一名中文游戏 UGC 文案助手，根据用户提示生成适合游戏场景的中文文本"
-    "（例如装备描述、技能说明、公会公告、角色台词草稿）。保持风格统一、可读性强。"
+    "\u4f60\u662f\u4e00\u540d\u4e2d\u6587\u6e38\u620f UGC \u6587\u6848\u52a9\u624b\uff0c\u6839\u636e\u7528\u6237\u63d0\u793a\u751f\u6210\u9002\u5408\u6e38\u620f\u573a\u666f\u7684\u4e2d\u6587\u6587\u672c"
+    "\uff08\u4f8b\u5982\u88c5\u5907\u63cf\u8ff0\u3001\u6280\u80fd\u8bf4\u660e\u3001\u516c\u4f1a\u516c\u544a\u3001\u89d2\u8272\u53f0\u8bcd\u8349\u7a3f\uff09\u3002\u4fdd\u6301\u98ce\u683c\u7edf\u4e00\u3001\u53ef\u8bfb\u6027\u5f3a\u3002"
 )
 
 PEACH_ROLEPLAY_PREFIX = (
@@ -144,7 +139,7 @@ PEACH_EOS_TOKEN_ID = 7
 
 
 def resolve_eos_token_id(tokenizer: Any) -> int:
-    """Prefer tokenizer eos; fall back to pad, then Peach legacy id."""
+    """Prefer tokenizer eos; fall back to pad, then legacy id."""
     tid = getattr(tokenizer, "eos_token_id", None)
     if tid is not None:
         return int(tid)
@@ -155,36 +150,41 @@ def resolve_eos_token_id(tokenizer: Any) -> int:
 
 
 # ---------------------------------------------------------------------------
-# llama-cpp-python native GGUF loading (no torch, no transformers at runtime)
+# Model loading (standard transformers)
 # ---------------------------------------------------------------------------
 
-_llm_instance = None
+_cached_tokenizer = None
+_cached_model = None
 
 
 @dataclass
 class PeachTextGenerationPipeline:
-    """Wraps a llama_cpp.Llama instance. tokenizer kept as None for API compat."""
-
+    """Thin wrapper so callers can hold one cached object (model + tokenizer)."""
     model: Any
-    tokenizer: Any = field(default=None)
+    tokenizer: Any
 
 
 def get_pipeline_device_summary(pipe: PeachTextGenerationPipeline) -> str:
-    """Human-readable description of inference backend."""
-    return "CPU · llama.cpp (GGUF Q4_K_M, mmap)"
+    """Human-readable description of where model parameters live."""
+    dev = next(pipe.model.parameters()).device
+    if dev.type == "cuda":
+        idx = dev.index if dev.index is not None else 0
+        try:
+            name = torch.cuda.get_device_name(idx)
+        except Exception:
+            name = "CUDA"
+        return f"GPU \u00b7 {name} \u00b7 {dev}"
+    if dev.type == "mps":
+        return f"GPU (Apple MPS) \u00b7 {dev}"
+    return f"CPU \u00b7 {dev}"
 
 
 def get_text_generation_pipeline(
     *,
     on_loading_step: Callable[[str], None] | None = None,
 ) -> PeachTextGenerationPipeline:
-    """
-    Load the GGUF model natively via llama-cpp-python (stays quantized, uses mmap).
-
-    This avoids the transformers GGUF→fp16 dequantization path that requires ~3.6GB peak RAM
-    and OOM-kills on Streamlit Cloud free tier.
-    """
-    global _llm_instance
+    """Load Qwen2.5-0.5B-Instruct via transformers (safetensors, fp16, no trust_remote_code)."""
+    global _cached_tokenizer, _cached_model
 
     def report(msg: str) -> None:
         if on_loading_step is not None:
@@ -197,50 +197,50 @@ def get_text_generation_pipeline(
         rss = p.memory_info().rss / 1024 / 1024
         vm = _ps.virtual_memory()
         return f"RSS={rss:.0f}MB avail={vm.available/1024/1024:.0f}MB total={vm.total/1024/1024:.0f}MB"
-    print(f"[DBG-18a7ba] llama_cpp/start {_mem_mb()}", flush=True)
+    print(f"[DBG-18a7ba] qwen/start {_mem_mb()}", flush=True)
     # #endregion
 
-    if _llm_instance is not None:
-        report("**Model** already in memory (skipped).")
-        pipe = PeachTextGenerationPipeline(model=_llm_instance)
-        report(f"**Ready.** Device: `{get_pipeline_device_summary(pipe)}`")
-        return pipe
+    hub_kw: dict[str, Any] = {}
+    if TEXT_GEN_MODEL_REVISION:
+        hub_kw["revision"] = TEXT_GEN_MODEL_REVISION
 
-    report(
-        f"Loading **{TEXT_GEN_GGUF_FILE}** from `{TEXT_GEN_MODEL_ID}` via llama.cpp… "
-        "First run downloads ~1.3GB from the Hub."
-    )
-
-    from llama_cpp import Llama
-
-    # #region agent log
-    print(f"[DBG-18a7ba] llama_cpp/before_load {_mem_mb()}", flush=True)
-    # #endregion
-
-    try:
-        _llm_instance = Llama.from_pretrained(
-            repo_id=TEXT_GEN_MODEL_ID,
-            filename=TEXT_GEN_GGUF_FILE,
-            n_ctx=2048,
-            n_gpu_layers=0,
-            use_mmap=True,
-            verbose=True,
-        )
-    except Exception as exc:
+    if _cached_tokenizer is None:
+        report(f"Loading **tokenizer** (`{TEXT_GEN_MODEL_ID}`)...")
         # #region agent log
-        print(f"[DBG-18a7ba] llama_cpp/load_error {type(exc).__name__}: {exc}", flush=True)
+        print(f"[DBG-18a7ba] qwen/tokenizer_start {_mem_mb()}", flush=True)
         # #endregion
-        raise RuntimeError(
-            f"Failed to load GGUF model via llama-cpp-python. "
-            f"Underlying error ({type(exc).__name__}): {exc}"
-        ) from exc
+        _cached_tokenizer = AutoTokenizer.from_pretrained(TEXT_GEN_MODEL_ID, **hub_kw)
+        # #region agent log
+        print(f"[DBG-18a7ba] qwen/tokenizer_done {_mem_mb()}", flush=True)
+        # #endregion
+        report("**Tokenizer** loaded.")
 
+    if _cached_model is None:
+        report(
+            f"Loading **model weights** (`{TEXT_GEN_MODEL_ID}`, safetensors, float16)... "
+            "First run downloads ~1GB from the Hub."
+        )
+        dtype = torch.float16
+        device_map: str | dict = "auto" if torch.cuda.is_available() else {"": "cpu"}
+        # #region agent log
+        print(f"[DBG-18a7ba] qwen/model_start dtype={dtype} device_map={device_map} {_mem_mb()}", flush=True)
+        # #endregion
+        _cached_model = AutoModelForCausalLM.from_pretrained(
+            TEXT_GEN_MODEL_ID,
+            torch_dtype=dtype,
+            device_map=device_map,
+            low_cpu_mem_usage=True,
+            **hub_kw,
+        )
+        # #region agent log
+        print(f"[DBG-18a7ba] qwen/model_done {_mem_mb()}", flush=True)
+        # #endregion
+        report("**Model weights** loaded.")
+
+    pipe = PeachTextGenerationPipeline(model=_cached_model, tokenizer=_cached_tokenizer)
     # #region agent log
-    print(f"[DBG-18a7ba] llama_cpp/loaded {_mem_mb()}", flush=True)
+    print(f"[DBG-18a7ba] qwen/ready {_mem_mb()}", flush=True)
     # #endregion
-
-    report("**Model loaded** (llama.cpp, mmap, Q4_K_M).")
-    pipe = PeachTextGenerationPipeline(model=_llm_instance)
     report(f"**Ready.** Device: `{get_pipeline_device_summary(pipe)}`")
     return pipe
 
@@ -260,7 +260,7 @@ def _build_messages(
     system_prompt: str,
     use_chinese_roleplay_wrap: bool,
 ) -> list[dict[str, str]]:
-    """Build chat messages for the model's chat template."""
+    """Build chat messages for Qwen's ChatML template."""
     sys_content = system_prompt.strip()
     if use_chinese_roleplay_wrap:
         sys_content = PEACH_ROLEPLAY_PREFIX + sys_content + PEACH_ROLEPLAY_SUFFIX
@@ -282,39 +282,49 @@ def generate_ugc_text(
     do_sample: bool = True,
     repetition_penalty: float = 1.05,
 ) -> tuple[str, float, list[dict[str, str]]]:
-    """
-    Generate Chinese game-style UGC text using llama-cpp-python.
-
-    Returns:
-        (generated_text, elapsed_sec, messages_used)
-    """
+    """Generate Chinese game-style UGC text using transformers generate()."""
     user_text, _truncated = normalize_and_truncate_prompt(user_prompt)
     sys_text = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT_ZH
     messages = _build_messages(user_text, sys_text, use_chinese_roleplay_wrap)
 
-    llm = pipe.model
+    tokenizer = pipe.tokenizer
+    model = pipe.model
+
+    input_ids = tokenizer.apply_chat_template(
+        conversation=messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    )
+    device = next(model.parameters()).device
+    input_ids = input_ids.to(device)
+    prompt_len = int(input_ids.shape[1])
 
     gen_kwargs: dict[str, Any] = {
-        "messages": messages,
-        "max_tokens": max_new_tokens,
-        "repeat_penalty": repetition_penalty,
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "repetition_penalty": repetition_penalty,
+        "eos_token_id": resolve_eos_token_id(tokenizer),
     }
     if do_sample:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p
-    else:
-        gen_kwargs["temperature"] = 0.0
 
     start = time.perf_counter()
-    result = llm.create_chat_completion(**gen_kwargs)
+    with torch.inference_mode():
+        output_ids = model.generate(input_ids, **gen_kwargs)
     elapsed_sec = time.perf_counter() - start
 
-    generated_text = (result["choices"][0]["message"]["content"] or "").strip()
+    new_ids = output_ids[0, prompt_len:]
+    generated_text = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
     return generated_text, elapsed_sec, messages
 
 
 def _device_note() -> str:
-    return "cpu (llama.cpp)"
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        return f"cuda: {name}"
+    return "cpu"
 
 
 def build_generation_export_dict(
@@ -325,7 +335,7 @@ def build_generation_export_dict(
     elapsed_sec: float,
     model_id: str = TEXT_GEN_MODEL_ID,
 ) -> dict[str, Any]:
-    """Build a JSON-serializable dict for one generation run (UI + notebook export)."""
+    """Build a JSON-serializable dict for one generation run."""
     return {
         "model_id": model_id,
         "messages": messages,
@@ -338,6 +348,6 @@ def build_generation_export_dict(
 
 
 def save_generation_json(data: dict[str, Any], path: str) -> None:
-    """Write export dict to a UTF-8 JSON file (idempotent overwrite)."""
+    """Write export dict to a UTF-8 JSON file."""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

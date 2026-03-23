@@ -1,24 +1,19 @@
-# llama-cpp-python: native GGUF loader (stays quantized in memory, uses mmap — avoids OOM on Cloud).
-# First deploy compiles from source (~10-15 min); Streamlit Cloud caches it for subsequent deploys.
-# The prebuilt wheels from abetlen.github.io are musl-only and incompatible with Cloud's glibc.
-llama-cpp-python
+# PyTorch CPU wheels
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Core: transformers + torch for Qwen2.5-0.5B-Instruct (safetensors, ~1GB fp16)
+torch>=2.6.0,<3.0.0
+transformers>=4.40.0,<5.0.0
+accelerate
+safetensors
 
 # Streamlit
 altair>=4.2.0,<5.0.0
 streamlit>=1.28.0,<2.0.0
 
-# Shared utilities used by model_utils / app
+# Utilities
 psutil
-
-# Keep torch + transformers installed for notebook compatibility (not imported by the Streamlit app).
-# If Cloud memory is tight, these can be removed — the app only uses llama-cpp-python at runtime.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.6.0,<3.0.0
-transformers>=4.40.0,<5.0.0
 sentencepiece
 datasets
 pandas
 scikit-learn
-accelerate
-safetensors
-gguf>=0.10.0
