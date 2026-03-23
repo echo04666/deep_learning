@@ -15,6 +15,7 @@ import streamlit as st
 st.set_page_config(page_title="Game UGC \u2014 Text Generation", layout="wide")
 
 from model_utils import (
+    DEFAULT_SYSTEM_PROMPT_ZH,
     MAX_PROMPT_CHARS,
     DEFAULT_NARRATIVE_CHAR_A,
     DEFAULT_NARRATIVE_CHAR_B,
@@ -26,7 +27,6 @@ from model_utils import (
     build_generation_export_dict,
     build_narrative_user_prompt,
     generate_ugc_text,
-    get_pipeline_device_summary,
     get_text_generation_pipeline,
     normalize_and_truncate_prompt,
     resolve_eos_token_id,
@@ -45,29 +45,53 @@ def _load_text_generation_pipeline_cached():
 
 
 st.title("Game UGC \u2014 Text Generation")
-st.info(
-    "This page runs the **text-generation** step only. "
-    "A second Hugging Face pipeline (toxic / safety **classification**) will be added here "
-    "in a later milestone (see project docs)."
-)
-st.warning(
-    f"Current Hub model: **{TEXT_GEN_MODEL_ID}** (0.5B, safetensors, float16 via transformers). "
-    "Runs on CPU; generation is slower than GPU but fits Community Cloud memory."
-)
 
 if "last_export" not in st.session_state:
     st.session_state.last_export = None
 
 with st.sidebar:
     st.header("Generation settings")
-    max_new_tokens = st.slider("max_new_tokens", 64, 1024, 512, 64)
-    temperature = st.slider("temperature", 0.1, 1.5, 0.5, 0.05)
-    top_p = st.slider("top_p", 0.1, 1.0, 0.7, 0.05)
-    do_sample = st.checkbox("do_sample (uncheck for greedy decoding)", value=True)
+    do_sample = st.checkbox(
+        "Creative mode",
+        value=True,
+        help="Turn on for more varied output. Turn off for more stable and repeatable output.",
+    )
+    with st.expander("What changes when Creative mode is on/off?"):
+        st.markdown(
+            "- **Checked (Creative mode ON):** uses probabilistic sampling. Results vary across runs and can be more imaginative.\n"
+            "- **Unchecked (Creative mode OFF):** uses deterministic decoding. Results are more stable and repeatable.\n"
+            "- When OFF, **temperature** and **top-p** are disabled because they only affect sampling."
+        )
+    max_new_tokens = st.slider(
+        "Maximum response length (tokens)",
+        64,
+        1024,
+        512,
+        64,
+        help="Upper limit for generated output length. Higher values can produce longer text but take more time.",
+    )
+    temperature = st.slider(
+        "Creativity level (temperature)",
+        0.1,
+        1.5,
+        0.5,
+        0.05,
+        disabled=not do_sample,
+        help="Lower values are more focused and deterministic; higher values are more diverse and creative.",
+    )
+    top_p = st.slider(
+        "Word-choice diversity (top-p)",
+        0.1,
+        1.0,
+        0.7,
+        0.05,
+        disabled=not do_sample,
+        help="Controls how broad the candidate token pool is. Lower values are safer; higher values allow more variety.",
+    )
     use_cn_wrap = st.checkbox(
-        "Chinese roleplay wrap on system prompt (model-card README)",
+        "Dialogue mode",
         value=False,
-        help="Prepends/appends the official prefix and suffix from the model card to bias Chinese roleplay style.",
+        help="Wraps the system prompt with roleplay instructions so outputs are more dialogue-like and in-character.",
     )
     st.subheader("System prompt")
     system_custom = st.text_area(
@@ -75,8 +99,10 @@ with st.sidebar:
         value="",
         height=120,
         help=(
-            "Leave empty: **Free-form** uses default UGC assistant; **Narrative template** uses "
-            "`DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH` in model_utils (dialogue-focused, anti-scaffold)."
+            "Use this when you want strict style/format control (tone, persona, output constraints). "
+            "Leave empty to use defaults.\n\n"
+            f"Default for Free-form:\n{DEFAULT_SYSTEM_PROMPT_ZH}\n\n"
+            f"Default for Narrative template:\n{DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH}"
         ),
     )
 
@@ -84,21 +110,21 @@ st.subheader("User prompt")
 
 prompt_source = st.radio(
     "Prompt source",
-    ("Free-form text", "Narrative template (same builder as course notebook)"),
+    ("Free-form mode", "Narrative template"),
     horizontal=True,
     help="Narrative template calls model_utils.build_narrative_user_prompt.",
 )
 
 free_form_prompt = ""
-if prompt_source == "Free-form text":
+if prompt_source == "Free-form mode":
     free_form_prompt = st.text_area(
-        "Prompt for game UGC text (Chinese or bilingual)",
+        "Prompt for game UGC text (Chinese)",
         height=160,
         placeholder="e.g. Write a legendary two-handed sword item description in a wuxia tone.",
     )
 else:
     st.caption(
-        "Fields are assembled into one compact user message via `build_narrative_user_prompt` in `model_utils.py`."
+        "Fill in the fields below and the text will be assembled for dialogue generation"
     )
     col_a, col_b = st.columns(2)
     with col_a:
@@ -137,14 +163,12 @@ col_run, col_clear = st.columns(2)
 run_clicked = col_run.button("Generate", type="primary")
 col_clear.button("Clear last JSON export", on_click=_clear_last_export)
 st.caption(
-    "First **Generate** downloads the model (~1GB safetensors) and loads it in float16. "
-    "On **Streamlit Community Cloud** this may take **a few minutes**; check **Logs** (Manage app). "
-    "In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
+    "The first load will require downloading the model, please be patient ~"
 )
 
 if run_clicked:
     st.session_state.last_export = None
-    if prompt_source == "Free-form text":
+    if prompt_source == "Free-form mode":
         raw_user_prompt = free_form_prompt
     else:
         try:
@@ -166,10 +190,16 @@ if run_clicked:
         st.stop()
 
     if truncated:
-        st.warning(
-            f"Prompt was truncated to {len(trimmed)} characters "
-            f"(max {MAX_PROMPT_CHARS}) to protect context length."
+        prompt_length_status = (
+            f"Truncated to {len(trimmed)} characters "
+            f"(limit: {MAX_PROMPT_CHARS})."
         )
+        st.warning(f"Prompt length status: {prompt_length_status}")
+    else:
+        prompt_length_status = (
+            f"Within limit ({len(trimmed)}/{MAX_PROMPT_CHARS} characters)."
+        )
+        st.info(f"Prompt length status: {prompt_length_status}")
 
     if system_custom.strip():
         system_prompt = system_custom.strip()
@@ -182,13 +212,16 @@ if run_clicked:
     repetition_penalty = 1.15 if narrative_mode else 1.05
     no_repeat_ngram = 3 if narrative_mode else None
 
+    loading_status = st.empty()
+    loading_status.info("Start loading model...")
+
     try:
         pipe = _load_text_generation_pipeline_cached()
     except RuntimeError as exc:
+        loading_status.empty()
         st.error(str(exc))
         st.stop()
-
-    st.info(f"**Inference device:** `{get_pipeline_device_summary(pipe)}`")
+    loading_status.success("Model loaded successfully.")
 
     gen_params = {
         "max_new_tokens": max_new_tokens,
@@ -199,6 +232,7 @@ if run_clicked:
         "no_repeat_ngram_size": no_repeat_ngram,
         "eos_token_id": resolve_eos_token_id(pipe.tokenizer),
         "use_chinese_roleplay_wrap": use_cn_wrap,
+        "prompt_length_status": prompt_length_status,
     }
 
     try:
