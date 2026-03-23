@@ -190,29 +190,13 @@ def get_text_generation_pipeline(
         if on_loading_step is not None:
             on_loading_step(msg)
 
-    # #region agent log
-    import psutil as _ps, os as _os
-    def _mem_mb() -> str:
-        p = _ps.Process(_os.getpid())
-        rss = p.memory_info().rss / 1024 / 1024
-        vm = _ps.virtual_memory()
-        return f"RSS={rss:.0f}MB avail={vm.available/1024/1024:.0f}MB total={vm.total/1024/1024:.0f}MB"
-    print(f"[DBG-18a7ba] qwen/start {_mem_mb()}", flush=True)
-    # #endregion
-
     hub_kw: dict[str, Any] = {}
     if TEXT_GEN_MODEL_REVISION:
         hub_kw["revision"] = TEXT_GEN_MODEL_REVISION
 
     if _cached_tokenizer is None:
         report(f"Loading **tokenizer** (`{TEXT_GEN_MODEL_ID}`)...")
-        # #region agent log
-        print(f"[DBG-18a7ba] qwen/tokenizer_start {_mem_mb()}", flush=True)
-        # #endregion
         _cached_tokenizer = AutoTokenizer.from_pretrained(TEXT_GEN_MODEL_ID, **hub_kw)
-        # #region agent log
-        print(f"[DBG-18a7ba] qwen/tokenizer_done {_mem_mb()}", flush=True)
-        # #endregion
         report("**Tokenizer** loaded.")
 
     if _cached_model is None:
@@ -222,9 +206,6 @@ def get_text_generation_pipeline(
         )
         dtype = torch.float16
         device_map: str | dict = "auto" if torch.cuda.is_available() else {"": "cpu"}
-        # #region agent log
-        print(f"[DBG-18a7ba] qwen/model_start dtype={dtype} device_map={device_map} {_mem_mb()}", flush=True)
-        # #endregion
         _cached_model = AutoModelForCausalLM.from_pretrained(
             TEXT_GEN_MODEL_ID,
             torch_dtype=dtype,
@@ -232,15 +213,9 @@ def get_text_generation_pipeline(
             low_cpu_mem_usage=True,
             **hub_kw,
         )
-        # #region agent log
-        print(f"[DBG-18a7ba] qwen/model_done {_mem_mb()}", flush=True)
-        # #endregion
         report("**Model weights** loaded.")
 
     pipe = PeachTextGenerationPipeline(model=_cached_model, tokenizer=_cached_tokenizer)
-    # #region agent log
-    print(f"[DBG-18a7ba] qwen/ready {_mem_mb()}", flush=True)
-    # #endregion
     report(f"**Ready.** Device: `{get_pipeline_device_summary(pipe)}`")
     return pipe
 
