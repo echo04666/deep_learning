@@ -12,6 +12,33 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+# Streamlit requires set_page_config before any other st.* calls (including @st.cache_resource).
+st.set_page_config(page_title="Game UGC — Text Generation", layout="wide")
+# #region agent log
+try:
+    import json as _json
+    import time as _time
+
+    with open(
+        "/Users/nijialu/Desktop/dl/.cursor/debug-18a7ba.log", "a", encoding="utf-8"
+    ) as _df:
+        _df.write(
+            _json.dumps(
+                {
+                    "sessionId": "18a7ba",
+                    "hypothesisId": "H1",
+                    "location": "app.py:after_set_page_config",
+                    "message": "set_page_config ok",
+                    "data": {},
+                    "timestamp": int(_time.time() * 1000),
+                }
+            )
+            + "\n"
+        )
+except OSError:
+    pass
+# #endregion
+
 from model_utils import (
     MAX_PROMPT_CHARS,
     DEFAULT_NARRATIVE_CHAR_A,
@@ -38,10 +65,33 @@ from model_utils import (
 )
 def _load_text_generation_pipeline_cached():
     """One load per Cloud replica; avoids reloading on every Streamlit rerun."""
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+
+        with open(
+            "/Users/nijialu/Desktop/dl/.cursor/debug-18a7ba.log", "a", encoding="utf-8"
+        ) as _df:
+            _df.write(
+                _json.dumps(
+                    {
+                        "sessionId": "18a7ba",
+                        "hypothesisId": "H1",
+                        "location": "app.py:_load_text_generation_pipeline_cached",
+                        "message": "cache_resource load entered",
+                        "data": {},
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
     return get_text_generation_pipeline()
 
 
-st.set_page_config(page_title="Game UGC — Text Generation", layout="wide")
 st.title("Game UGC — Text Generation")
 st.info(
     "This page runs the **text-generation** step only. "
