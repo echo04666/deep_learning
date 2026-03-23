@@ -256,6 +256,15 @@ def get_text_generation_pipeline(
         if on_loading_step is not None:
             on_loading_step(msg)
 
+    # #region agent log — memory helper (shows in Cloud Logs via print)
+    import psutil as _ps, os as _os
+    def _mem_mb() -> str:
+        p = _ps.Process(_os.getpid())
+        rss = p.memory_info().rss / 1024 / 1024
+        vm = _ps.virtual_memory()
+        return f"RSS={rss:.0f}MB avail={vm.available/1024/1024:.0f}MB total={vm.total/1024/1024:.0f}MB"
+    # #endregion
+
     cuda_ok = torch.cuda.is_available()
     mps_ok = _mps_available()
     if cuda_ok:
@@ -267,12 +276,18 @@ def get_text_generation_pipeline(
     report(
         f"Environment: **CUDA** `{cuda_ok}`, **MPS** `{mps_ok}`. Planned device: **{plan}**."
     )
+    # #region agent log
+    print(f"[DBG-18a7ba] H1/env plan={plan} cuda={cuda_ok} mps={mps_ok} {_mem_mb()}", flush=True)
+    # #endregion
 
     if _peach_tokenizer is None:
         report(
             f"Loading **tokenizer** from GGUF (`{TEXT_GEN_GGUF_FILE}`)… "
             "Must match model file to avoid embedding/vocab mismatch."
         )
+        # #region agent log
+        print(f"[DBG-18a7ba] H2/tokenizer_start {_mem_mb()}", flush=True)
+        # #endregion
         try:
             _peach_tokenizer = AutoTokenizer.from_pretrained(
                 TEXT_GEN_MODEL_ID,
@@ -281,11 +296,17 @@ def get_text_generation_pipeline(
                 **_hub_revision_kw(TEXT_GEN_WEIGHTS_REVISION),
             )
         except Exception as exc:
+            # #region agent log
+            print(f"[DBG-18a7ba] H4/tokenizer_error {type(exc).__name__}: {exc}", flush=True)
+            # #endregion
             raise RuntimeError(
                 "Failed to load tokenizer from GGUF. "
                 "Install `gguf`, check network, and ensure transformers supports GGUF tokenizers. "
                 f"Underlying error ({type(exc).__name__}): {exc}"
             ) from exc
+        # #region agent log
+        print(f"[DBG-18a7ba] H2/tokenizer_done {_mem_mb()}", flush=True)
+        # #endregion
         report("**Tokenizer** loaded.")
     else:
         report("**Tokenizer** already in memory (skipped).")
@@ -296,6 +317,9 @@ def get_text_generation_pipeline(
             "First-time download ~1.3GB; dequantizing into PyTorch can use extra RAM briefly."
         )
         dtype = _select_torch_dtype()
+        # #region agent log
+        print(f"[DBG-18a7ba] H1/model_start dtype={dtype} device_map={_device_map_for_load()} {_mem_mb()}", flush=True)
+        # #endregion
         try:
             _peach_model = AutoModelForCausalLM.from_pretrained(
                 TEXT_GEN_MODEL_ID,
@@ -307,17 +331,26 @@ def get_text_generation_pipeline(
                 **_hub_revision_kw(TEXT_GEN_WEIGHTS_REVISION),
             )
         except Exception as exc:
+            # #region agent log
+            print(f"[DBG-18a7ba] H4/model_error {type(exc).__name__}: {exc} {_mem_mb()}", flush=True)
+            # #endregion
             raise RuntimeError(
                 "Failed to load GGUF text-generation model. "
                 "Install `gguf` (see app/requirements.txt), free RAM, try CUDA/MPS, "
                 "or switch TEXT_GEN_GGUF_FILE to ggml-model-Q4_0.gguf. "
                 f"Underlying error ({type(exc).__name__}): {exc}"
             ) from exc
+        # #region agent log
+        print(f"[DBG-18a7ba] H1/model_done {_mem_mb()}", flush=True)
+        # #endregion
         report("**Model weights** loaded.")
     else:
         report("**Model** already in memory (skipped).")
 
     pipe = PeachTextGenerationPipeline(model=_peach_model, tokenizer=_peach_tokenizer)
+    # #region agent log
+    print(f"[DBG-18a7ba] pipeline_ready {_mem_mb()}", flush=True)
+    # #endregion
     report(f"**Ready.** Parameter device: `{get_pipeline_device_summary(pipe)}`")
     return pipe
 
