@@ -8,6 +8,8 @@
 # Pin versions in submission to match notebooks after you verify locally.
 # Peach tokenizer uses use_fast=False; sentencepiece is commonly required.
 transformers>=4.40.0,<5.0.0
+# GGUF weight loading (Index-1.9B-Character-GGUF via transformers gguf_file=…)
+gguf>=0.10.0
 # Index-1.9B (pytorch_model.bin) needs torch>=2.6. Streamlit Cloud / Linux x86_64 typically resolves this.
 # macOS Intel pip may not offer torch 2.6+ — use Streamlit Cloud, conda, or a safetensors-only model locally.
 torch>=2.6.0,<3.0.0

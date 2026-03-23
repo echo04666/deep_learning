@@ -1,9 +1,10 @@
 """
-Shared Hugging Face text-generation helpers for the Peach roleplay model.
+Shared Hugging Face text-generation helpers for Index-1.9B Character (roleplay).
 
-The Hub model card recommends AutoModel + apply_chat_template + generate
-instead of a one-line transformers.pipeline call, so we lazy-load model and
-tokenizer and expose the same project function names as docs/02_text_generation.md.
+Weights default to GGUF Q4_K_M in ``IndexTeam/Index-1.9B-Character-GGUF`` (Transformers ``gguf_file``);
+tokenizer and ``apply_chat_template`` come from ``IndexTeam/Index-1.9B-Character`` (trust_remote_code).
+
+We lazy-load model + tokenizer and expose the same project function names as docs/02_text_generation.md.
 """
 
 from __future__ import annotations
@@ -18,13 +19,16 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Constants (project docs / model card) ---
-# Index-1.9B ships pytorch_model.bin only → requires torch>=2.6 (CVE-2025-32434). Linux/Streamlit Cloud
-# usually has pip wheels; macOS Intel pip often stops at torch 2.2 — develop locally with conda or run on Cloud.
-TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Chat"
-# Pin Hub git revision so trust_remote_code files do not float on each deploy (stops HF "new version"
-# warnings). From https://huggingface.co/api/models/IndexTeam/Index-1.9B-Chat → "sha". Set to None to
-# track default branch (not recommended for production). Update if you change TEXT_GEN_MODEL_ID.
-TEXT_GEN_MODEL_REVISION: str | None = "ff8442ed6b2024f816f195431333ad47cf2b5f54"
+# Text weights: GGUF quant in IndexTeam/Index-1.9B-Character-GGUF (llama.cpp export; ~1.3GB for Q4_K_M).
+# Tokenizer + chat template: IndexTeam/Index-1.9B-Character (custom IndexTokenizer; trust_remote_code).
+# Transformers loads GGUF via gguf_file (dequantizes into PyTorch for generate()); needs `gguf` package.
+# Alternative 4-bit file in the same repo: ggml-model-Q4_0.gguf (~1.26 GB, slightly smaller).
+TEXT_GEN_MODEL_ID = "IndexTeam/Index-1.9B-Character-GGUF"
+TEXT_GEN_GGUF_FILE = "ggml-model-Q4_K_M.gguf"
+TEXT_GEN_WEIGHTS_REVISION: str | None = "27db5d0b0411f1e34358064ba2a033f57608b404"
+
+TEXT_GEN_TOKENIZER_ID = "IndexTeam/Index-1.9B-Character"
+TEXT_GEN_TOKENIZER_REVISION: str | None = "5d9e9b693781ead815b4099471c31b67ae78722b"
 MAX_PROMPT_CHARS = 4000
 
 # --- Narrative prompt template (shared by notebook + Streamlit; same as 04_text_generation_peach_pipeline) ---
@@ -150,21 +154,21 @@ PEACH_ROLEPLAY_SUFFIX = "\n\nYou must response in Chinese."
 PEACH_EOS_TOKEN_ID = 7
 
 
-def _hub_load_kw() -> dict[str, Any]:
-    """Optional Hugging Face Hub kwargs (e.g. pinned revision)."""
-    if TEXT_GEN_MODEL_REVISION:
-        return {"revision": TEXT_GEN_MODEL_REVISION}
+def _hub_revision_kw(revision: str | None) -> dict[str, Any]:
+    """Optional Hugging Face Hub kwargs (pinned git revision)."""
+    if revision:
+        return {"revision": revision}
     return {}
 
 
-def _hub_trust_remote_code() -> bool:
-    """True for repos with custom Python modeling code (Peach, Index chat, etc.)."""
-    return TEXT_GEN_MODEL_ID.startswith(("ClosedCharacter/", "IndexTeam/"))
+def _hub_trust_remote_code_tokenizer() -> bool:
+    """True when tokenizer repo ships custom tokenization Python (Index Character, etc.)."""
+    return TEXT_GEN_TOKENIZER_ID.startswith(("ClosedCharacter/", "IndexTeam/"))
 
 
 def _tokenizer_use_fast() -> bool:
     """SentencePiece-only legacy tokenizers often require use_fast=False."""
-    return not _hub_trust_remote_code()
+    return not _hub_trust_remote_code_tokenizer()
 
 
 def resolve_eos_token_id(tokenizer: Any) -> int:
@@ -277,15 +281,15 @@ def get_text_generation_pipeline(
 
     if _peach_tokenizer is None:
         report(
-            f"Loading **tokenizer** (`{TEXT_GEN_MODEL_ID}`)… "
+            f"Loading **tokenizer** (`{TEXT_GEN_TOKENIZER_ID}`)… "
             "First run may download files from the Hub."
         )
         try:
             _peach_tokenizer = AutoTokenizer.from_pretrained(
-                TEXT_GEN_MODEL_ID,
+                TEXT_GEN_TOKENIZER_ID,
                 use_fast=_tokenizer_use_fast(),
-                trust_remote_code=_hub_trust_remote_code(),
-                **_hub_load_kw(),
+                trust_remote_code=_hub_trust_remote_code_tokenizer(),
+                **_hub_revision_kw(TEXT_GEN_TOKENIZER_REVISION),
             )
         except Exception as exc:
             raise RuntimeError(
@@ -298,25 +302,25 @@ def get_text_generation_pipeline(
 
     if _peach_model is None:
         report(
-            "Loading **model weights**… First-time download can be slow; "
-            "see the **terminal** where Streamlit runs for detailed tqdm progress."
+            f"Loading **GGUF weights** (`{TEXT_GEN_GGUF_FILE}` from `{TEXT_GEN_MODEL_ID}`)… "
+            "First-time download ~1.3GB; dequantizing into PyTorch can use extra RAM briefly."
         )
         dtype = _select_torch_dtype()
         try:
-            # Repos with only pytorch_model.bin need torch>=2.6 (CVE-2025-32434); safetensors does not.
             _peach_model = AutoModelForCausalLM.from_pretrained(
                 TEXT_GEN_MODEL_ID,
+                gguf_file=TEXT_GEN_GGUF_FILE,
                 dtype=dtype,
-                trust_remote_code=_hub_trust_remote_code(),
+                trust_remote_code=False,
                 device_map=_device_map_for_load(),
                 low_cpu_mem_usage=True,
-                **_hub_load_kw(),
+                **_hub_revision_kw(TEXT_GEN_WEIGHTS_REVISION),
             )
         except Exception as exc:
             raise RuntimeError(
-                "Failed to load text-generation model. "
-                "Try: free RAM, use CUDA or Apple Silicon (MPS), set a smaller `TEXT_GEN_MODEL_ID`, "
-                "or ensure the Hub download finished. "
+                "Failed to load GGUF text-generation model. "
+                "Install `gguf` (see app/requirements.txt), free RAM, try CUDA/MPS, "
+                "or switch TEXT_GEN_GGUF_FILE to ggml-model-Q4_0.gguf. "
                 f"Underlying error ({type(exc).__name__}): {exc}"
             ) from exc
         report("**Model weights** loaded.")
