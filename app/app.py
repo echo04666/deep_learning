@@ -1,5 +1,5 @@
 """
-Streamlit app: Chinese game UGC text generation with Peach (HF Hub).
+Streamlit app: Chinese game UGC text generation (llama-cpp-python + GGUF).
 
 Course layout: constants / loaders / inference helpers live in model_utils.py.
 Safety classification pipeline will be added in a later milestone (docs/01).
@@ -12,32 +12,7 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-# Streamlit requires set_page_config before any other st.* calls (including @st.cache_resource).
 st.set_page_config(page_title="Game UGC — Text Generation", layout="wide")
-# #region agent log
-try:
-    import json as _json
-    import time as _time
-
-    with open(
-        "/Users/nijialu/Desktop/dl/.cursor/debug-18a7ba.log", "a", encoding="utf-8"
-    ) as _df:
-        _df.write(
-            _json.dumps(
-                {
-                    "sessionId": "18a7ba",
-                    "hypothesisId": "H1",
-                    "location": "app.py:after_set_page_config",
-                    "message": "set_page_config ok",
-                    "data": {},
-                    "timestamp": int(_time.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-except OSError:
-    pass
-# #endregion
 
 from model_utils import (
     MAX_PROMPT_CHARS,
@@ -53,42 +28,17 @@ from model_utils import (
     get_pipeline_device_summary,
     get_text_generation_pipeline,
     normalize_and_truncate_prompt,
-    resolve_eos_token_id,
 )
 
 
 @st.cache_resource(
     show_spinner=(
-        "Loading language model — first run downloads ~1.3GB GGUF (weights + tokenizer vocab) from Hugging Face "
-        "(Community Cloud CPU can still take several minutes; keep this tab open, check Logs for tqdm)"
+        "Loading language model via llama.cpp — first run downloads ~1.3GB GGUF from Hugging Face "
+        "(Community Cloud CPU: may take a few minutes; keep this tab open, check Logs)"
     ),
 )
 def _load_text_generation_pipeline_cached():
     """One load per Cloud replica; avoids reloading on every Streamlit rerun."""
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-
-        with open(
-            "/Users/nijialu/Desktop/dl/.cursor/debug-18a7ba.log", "a", encoding="utf-8"
-        ) as _df:
-            _df.write(
-                _json.dumps(
-                    {
-                        "sessionId": "18a7ba",
-                        "hypothesisId": "H1",
-                        "location": "app.py:_load_text_generation_pipeline_cached",
-                        "message": "cache_resource load entered",
-                        "data": {},
-                        "timestamp": int(_time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
     return get_text_generation_pipeline()
 
 
@@ -99,8 +49,8 @@ st.info(
     "in a later milestone (see project docs)."
 )
 st.warning(
-    f"Current Hub model: **{TEXT_GEN_MODEL_ID}**. Large models need a **CUDA GPU** with enough VRAM; "
-    "Streamlit Cloud free tier may not load them."
+    f"Current Hub model: **{TEXT_GEN_MODEL_ID}** (GGUF Q4_K_M via llama.cpp). "
+    "Runs on CPU; larger models may need a GPU instance."
 )
 
 if "last_export" not in st.session_state:
@@ -267,9 +217,9 @@ col_run, col_clear = st.columns(2)
 run_clicked = col_run.button("Generate", type="primary")
 col_clear.button("Clear last JSON export", on_click=_clear_last_export)
 st.caption(
-    "First **Generate** downloads **Character-GGUF** Q4_K_M (~1.3GB, includes tokenizer); dequantizing into "
-    "PyTorch uses extra RAM briefly. On **Streamlit Community Cloud** this can still take **several minutes**; "
-    "check **Logs** (Manage app). In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
+    "First **Generate** downloads the GGUF (~1.3GB) and loads it via **llama.cpp** (stays quantized, uses mmap). "
+    "On **Streamlit Community Cloud** this may take **a few minutes**; check **Logs** (Manage app). "
+    "In **Advanced settings**, pick **Python 3.12** if builds fail on 3.14."
 )
 
 if run_clicked:
@@ -314,7 +264,6 @@ if run_clicked:
     system_prompt = system_custom.strip() or None
 
     try:
-        # Cached load: Streamlit shows a long-running spinner on first miss (Cloud-friendly).
         pipe = _load_text_generation_pipeline_cached()
     except RuntimeError as exc:
         st.error(str(exc))
@@ -328,7 +277,6 @@ if run_clicked:
         "top_p": top_p,
         "do_sample": do_sample,
         "repetition_penalty": 1.05,
-        "eos_token_id": resolve_eos_token_id(pipe.tokenizer),
         "use_chinese_roleplay_wrap": use_cn_wrap,
     }
 

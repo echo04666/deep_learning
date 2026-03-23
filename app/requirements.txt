@@ -1,24 +1,23 @@
-# PyTorch wheels: default PyPI often has no build for some Python versions.
-# If pip says "No matching distribution" for torch: use Python 3.12 or 3.11 in a fresh venv.
-# (Python 3.13 on macOS Intel/x86_64 often has no torch wheels on PyPI or download.pytorch.org.)
-# CUDA: install torch first from https://pytorch.org/get-started/locally/ then install the rest.
-# This extra index provides CPU wheels for many platforms:
---extra-index-url https://download.pytorch.org/whl/cpu
+# llama-cpp-python: native GGUF loader (stays quantized in memory, uses mmap — avoids OOM on Cloud).
+# Pre-built wheels for Linux x86_64 (manylinux) install without a compiler.
+llama-cpp-python
 
-# Pin versions in submission to match notebooks after you verify locally.
-# Peach tokenizer uses use_fast=False; sentencepiece is commonly required.
-transformers>=4.40.0,<5.0.0
-# GGUF weight loading (Index-1.9B-Character-GGUF via transformers gguf_file=…)
-gguf>=0.10.0
-# Index-1.9B (pytorch_model.bin) needs torch>=2.6. Streamlit Cloud / Linux x86_64 typically resolves this.
-# macOS Intel pip may not offer torch 2.6+ — use Streamlit Cloud, conda, or a safetensors-only model locally.
+# Streamlit
+altair>=4.2.0,<5.0.0
+streamlit>=1.28.0,<2.0.0
+
+# Shared utilities used by model_utils / app
+psutil
+
+# Keep torch + transformers installed for notebook compatibility (not imported by the Streamlit app).
+# If Cloud memory is tight, these can be removed — the app only uses llama-cpp-python at runtime.
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.6.0,<3.0.0
+transformers>=4.40.0,<5.0.0
 sentencepiece
 datasets
 pandas
 scikit-learn
-# Streamlit still imports altair.vegalite.v4; Altair 5+ removed it. Pin v4 for Cloud (uv) resolvers.
-altair>=4.2.0,<5.0.0
-streamlit>=1.28.0,<2.0.0
 accelerate
 safetensors
+gguf>=0.10.0
