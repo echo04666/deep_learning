@@ -22,6 +22,8 @@
 
 填写 **Hugging Face Model URL**、**Streamlit Cloud App URL**、**GitHub URL** 到报告与本文档末尾（提交前）。
 
+**Streamlit Cloud**：仓库根目录的 [`runtime.txt`](runtime.txt) 固定 **Python 3.12**；依赖见 [`app/requirements.txt`](app/requirements.txt)（含与 Streamlit 兼容的 **altair 4.x**，避免 `altair.vegalite.v4` 缺失）。
+
 ## Python / PyTorch（本地跑 Streamlit）
 
 - **推荐 Python 3.12 或 3.11**。默认文本生成模型为 **`IndexTeam/Index-1.9B-Chat`**（`pytorch_model.bin`），需要 **torch ≥ 2.6**（CVE-2025-32434）。
