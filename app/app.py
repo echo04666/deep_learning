@@ -39,38 +39,42 @@ from toxic_classification_pipeline import (
     validate_manual_sentence,
 )
 
-# --- Temporary debug: show per-sentence fail reason in Step 2 (remove or set False when done) ---
-DEBUG_SHOW_SENTENCE_FAIL_REASON = True
-
 # path settings
 APP_DIR = Path(__file__).resolve().parent
 HISTORY_JSON_PATH = APP_DIR / "data" / "publish_history.json"
 
 
-def _debug_sentence_fail_reason(it: dict) -> str | None:
-    """Build a short debug string for why a checked sentence is blocked (dev only)."""
+def _toxic_sentence_hint_captions(it: dict) -> list[str]:
+    """Zh captions under a failed sentence: wordlist → possible terms; model → generic hint only."""
     if not it.get("checked") or not it.get("is_toxic"):
-        return None
+        return []
+
     model_toxic = it.get("model_is_toxic")
     if model_toxic is None and it.get("label") not in (None, ""):
         model_toxic = is_predicted_toxic(str(it["label"]))
+    model_toxic = bool(model_toxic)
+
+    hits = it.get("dict_hits") if isinstance(it.get("dict_hits"), list) else []
     sens = it.get("is_sensitive_hit")
     if sens is None:
-        dh = it.get("dict_hits")
-        sens = bool(dh) if isinstance(dh, list) else False
-    parts: list[str] = []
+        sens = bool(hits)
+    sens = bool(sens)
+
+    lines: list[str] = []
+    if sens and hits:
+        lines.append("可能的敏感词：" + "、".join(hits))
+    elif sens:
+        lines.append("可能包含敏感词。")
+
     if model_toxic:
-        parts.append(
-            f"model: toxic (label={it.get('label')!r}, score={it.get('score')!r})"
-        )
-    if sens:
-        hits = it.get("dict_hits") if isinstance(it.get("dict_hits"), list) else []
-        preview = hits[:8]
-        more = f", …(+{len(hits) - 8})" if len(hits) > 8 else ""
-        parts.append(f"wordlist: hits={preview!r}{more}")
-    if not parts:
-        return "[DEBUG] blocked (no detail in session; try Recheck)"
-    return "[DEBUG] " + " | ".join(parts)
+        if sens and hits:
+            lines.append("可能包含敏感词。")
+        elif not sens:
+            lines.append("可能包含敏感词。")
+
+    if not lines:
+        lines.append("未通过安全检测，请修改后重新检测。")
+    return lines
 
 
 def _load_publish_history() -> list[dict]:
@@ -678,10 +682,8 @@ def main() -> None:
                     if it.get("checked"):
                         if it.get("is_toxic"):
                             st.error("Sensitive content, please modify")
-                            if DEBUG_SHOW_SENTENCE_FAIL_REASON:
-                                _msg = _debug_sentence_fail_reason(it)
-                                if _msg:
-                                    st.caption(_msg)
+                            for _hint in _toxic_sentence_hint_captions(it):
+                                st.caption(_hint)
                         else:
                             st.success("OK")
                     else:
