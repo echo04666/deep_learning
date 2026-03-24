@@ -39,3 +39,12 @@ models/finetuned/*
 
 # App runtime (local publish history)
 app/data/publish_history.json
+
+# App-only upload scope (optional but recommended)
+# If you only want to keep the Streamlit app in this repo,
+# ignore other project folders.
+notebooks/
+docs/
+data/
+models/
+tools/
