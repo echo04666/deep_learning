@@ -1,25 +1,40 @@
 """
-Pipeline 2: Chinese toxic  text classification.
-global cache + get_*_pipeline + transformers.pipeline
+Pipeline 2: Chinese toxic text classification + sensitive wordlist scan.
+Global cache + get_*_pipeline + transformers.pipeline.
 Model: fine-tuned on ToxiCN (binary labels non_toxic / toxic in training notebook).
+Wordlist: fetched over HTTPS from cjh0613/tencent-sensitive-words (raw GitHub), cached in memory only.
 """
 
 from __future__ import annotations
 
 import re
-import uuid # for generating unique sentence ids
-from typing import Any
+import urllib.error
+import urllib.request
+import uuid  # for generating unique sentence ids
+from typing import Any, Sequence
 
 from transformers import pipeline
 
 # model settings
 TOXIC_CLF_MODEL_ID = "echovivi/CustomModel_bertToxiCN"
 
+# Tencent-style list: one term per line (see upstream repo README)
+TENCENT_SENSITIVE_WORDS_URL = (
+    "https://raw.githubusercontent.com/cjh0613/tencent-sensitive-words/main/sensitive_words_lines.txt"
+)
+# Large file (~650KB); allow slow links / Streamlit Cloud cold start
+_SENSITIVE_WORDS_FETCH_TIMEOUT_SEC = 120
+_SENSITIVE_WORDS_USER_AGENT = "GameUGC-Safety/1.0 (course project; +https://github.com/cjh0613/tencent-sensitive-words)"
+
+# Cap stored hits per sentence; scanning still finds all for bool decision
+MAX_DICT_HITS_STORED = 32
+
 # Manual sentence input limit
 MAX_MANUAL_SENTENCE_CHARS = 100
 
 # Global pipeline cache to avoid repeated loading
 _text_classification_pipe: Any | None = None
+_sensitive_words_cache: list[str] | None = None
 
 
 def get_text_classification_pipeline() -> Any:
@@ -34,6 +49,97 @@ def get_text_classification_pipeline() -> Any:
             tokenizer=TOXIC_CLF_MODEL_ID,
         )
     return _text_classification_pipe
+
+
+def load_sensitive_words() -> list[str]:
+    """Download the Tencent-style word list once per process and cache in memory.
+
+    No local wordlist file is used. Requires network on the first call.
+
+    Raises:
+        RuntimeError: If the HTTP download fails or the payload is unusable.
+        ValueError: If the decoded text contains no valid terms.
+    """
+    global _sensitive_words_cache
+    if _sensitive_words_cache is not None:
+        return _sensitive_words_cache
+
+    req = urllib.request.Request(
+        TENCENT_SENSITIVE_WORDS_URL,
+        headers={"User-Agent": _SENSITIVE_WORDS_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_SENSITIVE_WORDS_FETCH_TIMEOUT_SEC) as resp:
+            raw_bytes = resp.read()
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            "Could not download sensitive word list from GitHub "
+            f"({TENCENT_SENSITIVE_WORDS_URL}). Check network access. "
+            f"Original error: {exc}"
+        ) from exc
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("Sensitive word list is not valid UTF-8.") from exc
+
+    words: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        words.append(line)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            unique.append(w)
+
+    if not unique:
+        raise ValueError(
+            "Downloaded sensitive word list is empty after parsing. "
+            "Upstream file may have changed format."
+        )
+
+    _sensitive_words_cache = unique
+    return _sensitive_words_cache
+
+
+def get_sensitive_word_list() -> list[str]:
+    """Return cached sensitive terms (downloads from GitHub on first call)."""
+    return load_sensitive_words()
+
+
+def _normalize_text_for_dict_scan(text: str) -> str:
+    """Minimal normalization before substring scan (strip only for v1)."""
+    return text.strip()
+
+
+def scan_tencent_offline_hits(text: str, words: Sequence[str]) -> list[str]:
+    """Find sensitive terms that appear as substrings in ``text``.
+
+    Uses a plain loop over ``words`` and ``w in text`` (see project docs).
+
+    Args:
+        text: Sentence or line to scan.
+        words: Loaded word list.
+
+    Returns:
+        Hit terms in first-seen wordlist order (may be long for huge wordlists).
+    """
+    t = _normalize_text_for_dict_scan(text)
+    if not t:
+        return []
+
+    hits: list[str] = []
+    for w in words:
+        if not w:
+            continue
+        if w in t:
+            hits.append(w)
+    return hits
 
 
 # If a split fragment has no CJK, no Latin letters, and no digits, treat it as
@@ -188,6 +294,51 @@ def classify_one_sentence(pipe: Any, text: str) -> dict[str, Any]:
     }
 
 
+def classify_one_sentence_with_wordlist(pipe: Any, text: str) -> dict[str, Any]:
+    """Run sensitive wordlist scan (GitHub-fetched, in-memory) plus HF classification; merge into one gate.
+
+    A sentence fails if **either** the model predicts toxic **or** any word hits.
+    Internal fields ``dict_hits`` / ``is_sensitive_hit`` are for storage only;
+    UI should use unified ``is_toxic`` only.
+
+    Args:
+        pipe: Output of ``get_text_classification_pipeline()``.
+        text: One sentence (user-edited or generated).
+
+    Returns:
+        Dict with keys: label, score, is_toxic (combined), dict_hits (truncated),
+        is_sensitive_hit, detail.
+    """
+    trimmed = text.strip()
+    if not trimmed:
+        return {
+            "label": "",
+            "score": 0.0,
+            "is_toxic": False,
+            "dict_hits": [],
+            "is_sensitive_hit": False,
+            "detail": "empty_sentence",
+        }
+
+    word_list = load_sensitive_words()
+    all_hits = scan_tencent_offline_hits(trimmed, word_list)
+    is_sensitive_hit = len(all_hits) > 0
+    dict_hits_stored = all_hits[:MAX_DICT_HITS_STORED]
+
+    model_out = classify_one_sentence(pipe, trimmed)
+    model_toxic = bool(model_out["is_toxic"])
+    combined_toxic = model_toxic or is_sensitive_hit
+
+    return {
+        "label": model_out["label"],
+        "score": float(model_out["score"]),
+        "is_toxic": combined_toxic,
+        "dict_hits": dict_hits_stored,
+        "is_sensitive_hit": is_sensitive_hit,
+        "detail": str(model_out.get("detail", "ok")),
+    }
+
+
 def new_sentence_item(text: str) -> dict[str, Any]:
     """Build one editable row for the safety step (no classification yet)."""
     return {
@@ -196,6 +347,7 @@ def new_sentence_item(text: str) -> dict[str, Any]:
         "label": None,
         "score": None,
         "is_toxic": None,
+        "dict_hits": None,
         "checked": False,
     }
 

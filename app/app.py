@@ -1,7 +1,7 @@
 """
 Streamlit app: Chinese game UGC text generation (Qwen) + safety check (fine-tuned BERT).
 Step 1: generate text. 
-Step 2: per-sentence toxic classification; publish only when all clear.
+Step 2: per-sentence safety review (Tencent wordlist from GitHub + HF classifier); publish only when all clear.
 History: published texts saved under app/data/publish_history.json (local / Cloud ephemeral).
 """
 
@@ -31,7 +31,7 @@ from model_utils import (
 from toxic_classification_pipeline import (
     MAX_MANUAL_SENTENCE_CHARS,
     TOXIC_CLF_MODEL_ID,
-    classify_one_sentence,
+    classify_one_sentence_with_wordlist,
     get_text_classification_pipeline,
     new_sentence_item,
     split_into_sentences,
@@ -223,12 +223,13 @@ def _run_classify_on_item(item_id: str) -> None:
                 "label": "",
                 "score": 0.0,
                 "is_toxic": False,
+                "dict_hits": [],
                 "checked": True,
             }
             st.session_state.safety_items = items
             return
         try:
-            out = classify_one_sentence(pipe, text)
+            out = classify_one_sentence_with_wordlist(pipe, text)
         except Exception as exc:
             st.session_state["_last_cls_error"] = str(exc)
             return
@@ -237,6 +238,7 @@ def _run_classify_on_item(item_id: str) -> None:
             "label": out["label"],
             "score": out["score"],
             "is_toxic": out["is_toxic"],
+            "dict_hits": out.get("dict_hits", []),
             "checked": True,
         }
         st.session_state.safety_items = items
@@ -257,11 +259,12 @@ def _run_classify_all() -> None:
                 "label": "",
                 "score": 0.0,
                 "is_toxic": False,
+                "dict_hits": [],
                 "checked": True,
             }
             continue
         try:
-            out = classify_one_sentence(pipe, text)
+            out = classify_one_sentence_with_wordlist(pipe, text)
         except Exception as exc:
             err = str(exc)
             break
@@ -270,6 +273,7 @@ def _run_classify_all() -> None:
             "label": out["label"],
             "score": out["score"],
             "is_toxic": out["is_toxic"],
+            "dict_hits": out.get("dict_hits", []),
             "checked": True,
         }
     st.session_state.safety_items = items
@@ -310,7 +314,10 @@ def main() -> None:
         if step == 1:
             st.info("Step 1 / 2: Generate UGC text, then go to **Safety check**.")
         else:
-            st.info("Step 2 / 2: Review each sentence. **Publish** is enabled only when all lines are checked and non-toxic.")
+            st.info(
+                "Step 2 / 2: Review each sentence. **Publish** is enabled only when every line has been checked "
+                "and passed the automated safety review."
+            )
     
         with st.sidebar:
             st.header("Generation settings")
@@ -556,7 +563,7 @@ def main() -> None:
                 "Publish (save to history)",
                 type="primary",
                 disabled=not publish_ok,
-                help="Enabled only when every sentence is checked and classified as non-toxic.",
+                help="Enabled only when every sentence has been checked and passed automated safety review.",
             ):
                 _sync_safety_texts_from_widgets()
                 lines = [it["text"].strip() for it in st.session_state.safety_items if it["text"].strip()]
@@ -588,8 +595,8 @@ def main() -> None:
     
             if not publish_ok and st.session_state.safety_items:
                 st.warning(
-                    "Publishing is locked until **every** sentence is non-toxic and has been checked "
-                    "(use **Run full check** or per-line **Recheck**)."
+                    "Publishing is locked until **every** sentence has been checked and passed the automated "
+                    "safety review (use **Run full check** or per-line **Recheck**)."
                 )
     
             # New sentence (manual, max 100 chars)
