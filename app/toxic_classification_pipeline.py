@@ -18,7 +18,7 @@ from transformers import pipeline
 # model settings
 TOXIC_CLF_MODEL_ID = "echovivi/CustomModel_bertToxiCN"
 
-# Tencent-style list: one term per line (see upstream repo README)
+# Tencent-style list: one term per line
 TENCENT_SENSITIVE_WORDS_URL = (
     "https://raw.githubusercontent.com/cjh0613/tencent-sensitive-words/main/sensitive_words_lines.txt"
 )
@@ -53,12 +53,6 @@ def get_text_classification_pipeline() -> Any:
 
 def load_sensitive_words() -> list[str]:
     """Download the Tencent-style word list once per process and cache in memory.
-
-    No local wordlist file is used. Requires network on the first call.
-
-    Raises:
-        RuntimeError: If the HTTP download fails or the payload is unusable.
-        ValueError: If the decoded text contains no valid terms.
     """
     global _sensitive_words_cache
     if _sensitive_words_cache is not None:
@@ -119,15 +113,6 @@ def _normalize_text_for_dict_scan(text: str) -> str:
 
 def scan_tencent_offline_hits(text: str, words: Sequence[str]) -> list[str]:
     """Find sensitive terms that appear as substrings in ``text``.
-
-    Uses a plain loop over ``words`` and ``w in text`` (see project docs).
-
-    Args:
-        text: Sentence or line to scan.
-        words: Loaded word list.
-
-    Returns:
-        Hit terms in first-seen wordlist order (may be long for huge wordlists).
     """
     t = _normalize_text_for_dict_scan(text)
     if not t:
@@ -189,14 +174,6 @@ def _is_punctuation_only_chunk(s: str) -> bool:
 
 def split_into_sentences(text: str) -> list[str]:
     """Split mixed Chinese/English UGC text into sentence-like units.
-    Uses Chinese and ASCII end punctuation plus newlines. Merges punctuation-only
-    fragments (e.g. a lone ``。`` after split) onto the previous or next real segment.
-
-    Args:
-        text: Raw generated or edited text.
-
-    Returns:
-        List of stripped sentence strings.
     """
     text = text.strip()
     if not text:
@@ -263,13 +240,6 @@ def is_predicted_toxic(label: str) -> bool:
 
 def classify_one_sentence(pipe: Any, text: str) -> dict[str, Any]:
     """Run classification on a single non-empty sentence.
-
-    Args:
-        pipe: Output of ``get_text_classification_pipeline()``.
-        text: One sentence (user-edited or generated).
-
-    Returns:
-        Dict with keys: label (str), score (float), is_toxic (bool).
     """
     trimmed = text.strip()
     if not trimmed:
@@ -296,18 +266,7 @@ def classify_one_sentence(pipe: Any, text: str) -> dict[str, Any]:
 
 def classify_one_sentence_with_wordlist(pipe: Any, text: str) -> dict[str, Any]:
     """Run sensitive wordlist scan (GitHub-fetched, in-memory) plus HF classification; merge into one gate.
-
     A sentence fails if **either** the model predicts toxic **or** any word hits.
-    Internal fields ``dict_hits`` / ``is_sensitive_hit`` are for storage only;
-    UI should use unified ``is_toxic`` only.
-
-    Args:
-        pipe: Output of ``get_text_classification_pipeline()``.
-        text: One sentence (user-edited or generated).
-
-    Returns:
-        Dict with keys: label, score, is_toxic (combined), dict_hits (truncated),
-        is_sensitive_hit, detail.
     """
     trimmed = text.strip()
     if not trimmed:
@@ -317,6 +276,7 @@ def classify_one_sentence_with_wordlist(pipe: Any, text: str) -> dict[str, Any]:
             "is_toxic": False,
             "dict_hits": [],
             "is_sensitive_hit": False,
+            "model_is_toxic": False,
             "detail": "empty_sentence",
         }
 
@@ -335,6 +295,7 @@ def classify_one_sentence_with_wordlist(pipe: Any, text: str) -> dict[str, Any]:
         "is_toxic": combined_toxic,
         "dict_hits": dict_hits_stored,
         "is_sensitive_hit": is_sensitive_hit,
+        "model_is_toxic": model_toxic,
         "detail": str(model_out.get("detail", "ok")),
     }
 
@@ -348,6 +309,8 @@ def new_sentence_item(text: str) -> dict[str, Any]:
         "score": None,
         "is_toxic": None,
         "dict_hits": None,
+        "is_sensitive_hit": None,
+        "model_is_toxic": None,
         "checked": False,
     }
 

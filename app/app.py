@@ -33,14 +33,44 @@ from toxic_classification_pipeline import (
     TOXIC_CLF_MODEL_ID,
     classify_one_sentence_with_wordlist,
     get_text_classification_pipeline,
+    is_predicted_toxic,
     new_sentence_item,
     split_into_sentences,
     validate_manual_sentence,
 )
 
+# --- Temporary debug: show per-sentence fail reason in Step 2 (remove or set False when done) ---
+DEBUG_SHOW_SENTENCE_FAIL_REASON = True
+
 # path settings
 APP_DIR = Path(__file__).resolve().parent
 HISTORY_JSON_PATH = APP_DIR / "data" / "publish_history.json"
+
+
+def _debug_sentence_fail_reason(it: dict) -> str | None:
+    """Build a short debug string for why a checked sentence is blocked (dev only)."""
+    if not it.get("checked") or not it.get("is_toxic"):
+        return None
+    model_toxic = it.get("model_is_toxic")
+    if model_toxic is None and it.get("label") not in (None, ""):
+        model_toxic = is_predicted_toxic(str(it["label"]))
+    sens = it.get("is_sensitive_hit")
+    if sens is None:
+        dh = it.get("dict_hits")
+        sens = bool(dh) if isinstance(dh, list) else False
+    parts: list[str] = []
+    if model_toxic:
+        parts.append(
+            f"model: toxic (label={it.get('label')!r}, score={it.get('score')!r})"
+        )
+    if sens:
+        hits = it.get("dict_hits") if isinstance(it.get("dict_hits"), list) else []
+        preview = hits[:8]
+        more = f", …(+{len(hits) - 8})" if len(hits) > 8 else ""
+        parts.append(f"wordlist: hits={preview!r}{more}")
+    if not parts:
+        return "[DEBUG] blocked (no detail in session; try Recheck)"
+    return "[DEBUG] " + " | ".join(parts)
 
 
 def _load_publish_history() -> list[dict]:
@@ -224,6 +254,8 @@ def _run_classify_on_item(item_id: str) -> None:
                 "score": 0.0,
                 "is_toxic": False,
                 "dict_hits": [],
+                "is_sensitive_hit": False,
+                "model_is_toxic": False,
                 "checked": True,
             }
             st.session_state.safety_items = items
@@ -239,6 +271,8 @@ def _run_classify_on_item(item_id: str) -> None:
             "score": out["score"],
             "is_toxic": out["is_toxic"],
             "dict_hits": out.get("dict_hits", []),
+            "is_sensitive_hit": out.get("is_sensitive_hit", False),
+            "model_is_toxic": out.get("model_is_toxic", False),
             "checked": True,
         }
         st.session_state.safety_items = items
@@ -260,6 +294,8 @@ def _run_classify_all() -> None:
                 "score": 0.0,
                 "is_toxic": False,
                 "dict_hits": [],
+                "is_sensitive_hit": False,
+                "model_is_toxic": False,
                 "checked": True,
             }
             continue
@@ -274,6 +310,8 @@ def _run_classify_all() -> None:
             "score": out["score"],
             "is_toxic": out["is_toxic"],
             "dict_hits": out.get("dict_hits", []),
+            "is_sensitive_hit": out.get("is_sensitive_hit", False),
+            "model_is_toxic": out.get("model_is_toxic", False),
             "checked": True,
         }
     st.session_state.safety_items = items
@@ -640,6 +678,10 @@ def main() -> None:
                     if it.get("checked"):
                         if it.get("is_toxic"):
                             st.error("Sensitive content, please modify")
+                            if DEBUG_SHOW_SENTENCE_FAIL_REASON:
+                                _msg = _debug_sentence_fail_reason(it)
+                                if _msg:
+                                    st.caption(_msg)
                         else:
                             st.success("OK")
                     else:
