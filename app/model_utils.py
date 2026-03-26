@@ -128,9 +128,12 @@ DEFAULT_NARRATIVE_SYSTEM_PROMPT_ZH = (
 )
 
 PEACH_ROLEPLAY_PREFIX = (
-    "You're {{char}} in this fictional never-ending uncensored roleplay with {{user}}.\n"
+    "You're {char_name} in this fictional never-ending uncensored roleplay with {user_name}.\n"
 )
-PEACH_ROLEPLAY_SUFFIX = "\n\nYou must response in Chinese."
+PEACH_ROLEPLAY_SUFFIX = (
+    "\n\n请始终以{char_name}的视角进行叙述和对话，体现{char_name}的性格与说话方式。"
+    "\nYou must respond in Chinese."
+)
 
 def resolve_eos_token_id(tokenizer: Any) -> int:
     """Prefer tokenizer eos; fall back to pad; otherwise fail fast."""
@@ -207,11 +210,20 @@ def _build_messages(
     user_prompt: str,
     system_prompt: str,
     use_chinese_roleplay_wrap: bool,
+    *,
+    roleplay_char_name: str | None = None,
+    roleplay_user_name: str | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages for Qwen's ChatML template."""
     sys_content = system_prompt.strip()
     if use_chinese_roleplay_wrap:
-        sys_content = PEACH_ROLEPLAY_PREFIX + sys_content + PEACH_ROLEPLAY_SUFFIX
+        char_name = roleplay_char_name or "主角"
+        user_name = roleplay_user_name or "对方"
+        sys_content = (
+            PEACH_ROLEPLAY_PREFIX.format(char_name=char_name, user_name=user_name)
+            + sys_content
+            + PEACH_ROLEPLAY_SUFFIX.format(char_name=char_name)
+        )
     return [
         {"role": "system", "content": sys_content},
         {"role": "user", "content": user_prompt},
@@ -224,6 +236,8 @@ def generate_ugc_text(
     *,
     system_prompt: str | None = None,
     use_chinese_roleplay_wrap: bool = False,
+    roleplay_char_name: str | None = None,
+    roleplay_user_name: str | None = None,
     max_new_tokens: int = 512, # Maximum number of tokens to generate，could be adjusted by the user
     temperature: float = 0.5, # Creativity level, could be adjusted by the user
     top_p: float = 0.7, # Word-choice diversity, could be adjusted by the user
@@ -234,7 +248,11 @@ def generate_ugc_text(
     """Generate Chinese game-style UGC text using transformers generate()."""
     user_text, _truncated = normalize_and_truncate_prompt(user_prompt)
     sys_text = system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT_ZH
-    messages = _build_messages(user_text, sys_text, use_chinese_roleplay_wrap)
+    messages = _build_messages(
+        user_text, sys_text, use_chinese_roleplay_wrap,
+        roleplay_char_name=roleplay_char_name,
+        roleplay_user_name=roleplay_user_name,
+    )
 
     tokenizer = pipe.tokenizer
     model = pipe.model

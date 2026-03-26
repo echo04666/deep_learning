@@ -528,6 +528,12 @@ def main() -> None:
                 st.stop()
             loading_status.success("Model loaded successfully.")
     
+            roleplay_char = None
+            roleplay_user = None
+            if prompt_source == "Narrative template":
+                roleplay_char = na.strip() or None
+                roleplay_user = nb.strip() or None
+
             try:
                 with st.spinner("Generating text..."):
                     generated_text, elapsed_sec, _messages = generate_ugc_text(
@@ -535,6 +541,8 @@ def main() -> None:
                         trimmed,
                         system_prompt=system_prompt,
                         use_chinese_roleplay_wrap=use_cn_wrap,
+                        roleplay_char_name=roleplay_char,
+                        roleplay_user_name=roleplay_user,
                         max_new_tokens=max_new_tokens,
                         temperature=temperature,
                         top_p=top_p,
